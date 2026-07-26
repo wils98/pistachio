@@ -1,0 +1,15 @@
+[project]
+name = "pistachio"
+version = "0.1.0"
+description = "OOTP scouting-rating projection system (wOBA/WAR), customized for the PSD league"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "jinja2>=3.1",
+]
+
+# Flat top-level modules (main.py, config.py, ...), not an installable package —
+# uv just needs to manage the dependency venv, not build/install this project itself.
+[tool.uv]
+package = false

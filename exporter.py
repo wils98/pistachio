@@ -73,6 +73,7 @@ def export_advanced_html(
     html_table = html_table.replace("<table ", '<table id="data" ', 1)
 
     full = HTML_DARK_TEMPLATE.format(title=title, table=html_table, page_len=page_len)
+    export_filepath.mkdir(parents=True, exist_ok=True)
     path = export_filepath / filename
     with open(path, "w", encoding="utf-8") as f:
         f.write(full)

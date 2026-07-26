@@ -1,0 +1,22 @@
+[Unit]
+Description=Pistachio projection pages (static)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ootp
+Group=ootp
+WorkingDirectory=/opt/pistachio
+EnvironmentFile=-/opt/pistachio/.env
+ExecStart=/opt/pistachio/.venv/bin/python serve.py
+Restart=on-failure
+RestartSec=5
+
+# Bind address comes from PISTACHIO_SERVE_HOST in .env (defaults to
+# 127.0.0.1 if unset — see serve.py). Set to the LXC's Tailscale IP for
+# tailnet reachability; never 0.0.0.0, since this box also has a plain
+# LAN interface that would then be exposed too.
+
+[Install]
+WantedBy=multi-user.target

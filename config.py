@@ -1,12 +1,36 @@
+import os
 from pathlib import Path
+
+
+def _load_env_file(path: Path) -> None:
+    """Minimal .env loader. Real environment variables take precedence."""
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
 
 # =============
 # Project Paths
 # =============
 
-filepath = Path('/Users/archie/Application Support/Out of the Park Developments/OOTP Baseball 26/saved_games/cubs_ootp26.lg/import_export/csv')
-export_filepath = Path('/Users/archie/Desktop/Stuff/squirrel_plays/Pistachio/outputs')
-pistachio_filepath = Path('/Users/archie/Desktop/Stuff/squirrel_plays/Pistachio')
+# Directory containing this file (where flagged.txt lives) — same in every environment,
+# never needs to be configured.
+pistachio_filepath = Path(__file__).resolve().parent
+
+_load_env_file(pistachio_filepath / ".env")
+
+# Where OOTP's exported CSVs land, and where generated HTML pages are written.
+# Overridable via PISTACHIO_INPUT_DIR / PISTACHIO_OUTPUT_DIR (env or .env) so the same
+# code runs unmodified for local dev and for the deployed timer; falls back to
+# subdirectories next to this file if unset.
+filepath = Path(os.environ.get("PISTACHIO_INPUT_DIR", pistachio_filepath / "sample_input"))
+export_filepath = Path(os.environ.get("PISTACHIO_OUTPUT_DIR", pistachio_filepath / "outputs"))
 
 # ========================
 # User & Team Identifiers
