@@ -25,59 +25,24 @@ pistachio_filepath = Path(__file__).resolve().parent
 
 _load_env_file(pistachio_filepath / ".env")
 
-# Where OOTP's exported CSVs land, and where generated HTML pages are written.
-# Overridable via PISTACHIO_INPUT_DIR / PISTACHIO_OUTPUT_DIR (env or .env) so the same
-# code runs unmodified for local dev and for the deployed timer; falls back to
-# subdirectories next to this file if unset.
-filepath = Path(os.environ.get("PISTACHIO_INPUT_DIR", pistachio_filepath / "sample_input"))
+# Player data (bio, ratings, career stats) is read from psd-ootp's own SQLite DB rather
+# than local OOTP CSV exports — psd-ootp already ingests everything needed via its own
+# live StatsPlus scrape. Read-only connection (mode=ro&immutable=1), mirroring psd-ootp's
+# own /api/sql safety pattern — this process can never write to that DB.
+DB_PATH = os.environ.get("PISTACHIO_DB_PATH", "/data/ootp.db")
+
+# Only generated HTML output is still a local path.
 export_filepath = Path(os.environ.get("PISTACHIO_OUTPUT_DIR", pistachio_filepath / "outputs"))
 
 # ========================
 # User & Team Identifiers
 # ========================
 
-ID = 3332 # this is your scout's coach_id taken from coaches.csv
-team_managed = 'CHC'  
+team_managed = 'CHC'
 
-# ======================
-# Club Lookup Map
-# ======================
-# This maps team/org ID numbers to team abbreviations (e.g. 6 → "CHC")
-# You can edit this dictionary if OOTP changes club IDs or you want to rename them
-
-club_lookup = {
-    0:  "Free",
-    1:  "AZ",
-    2:  "ATL",
-    3:  "BAL",
-    4:  "BOS",
-    5:  "CWS",
-    6:  "CHC",
-    7:  "CIN",
-    8:  "CLE",
-    9:  "COL",
-    10: "DET",
-    11: "MIA",
-    12: "HOU",
-    13: "KC",
-    14: "LAA",
-    15: "LAD",
-    16: "MIL",
-    17: "MIN",
-    18: "NYY",
-    19: "NYM",
-    20: "OAK",
-    21: "PHI",
-    22: "PIT",
-    23: "SD",
-    24: "SEA",
-    25: "SF",
-    26: "STL",
-    27: "TB",
-    28: "TEX",
-    29: "TOR",
-    30: "WSH"
-}
+# Note: no per-scout coach_id filter here (unlike upstream pistachio's `ID`). This league's
+# ratings are OSA-sourced — one shared rating stream for every team, not individual scout
+# opinions — so `add_scouted_ratings()` filters on `source = 'osa'` instead.
 
 # ============================
 # Fielding rating thresholds to be viewed as 'can field' at that position
@@ -126,175 +91,20 @@ HANDEDNESS_WEIGHTS = {
 }
 
 # ============================
-# Columns Used from Each CSV
+# Pitch-type rating columns
 # ============================
-
-# —— players.csv ——
-PLAYERS_COLUMNS = [
-    "player_id",
-    "first_name",
-    "last_name",
-    "age",
-    "team_id",
-    "organization_id",
-    "retired"
-]
-
-# —— players_career_pitching_stats.csv ——
-PITCHING_STATS_COLUMNS = [
-    "player_id",
-    "ip",
-    "level_id",
-    "split_id",
-    "year"
-]
-
-# —— players_career_batting_stats.csv ——
-HITTING_STATS_COLUMNS = [
-    "player_id",
-    "year",
-    "level_id",
-    "split_id",
-    "pa"
-]
-
-# —— players_scouted_ratings.csv ——
-SCOUTED_RATINGS_COLUMNS = [
-    "player_id",
-    "scouting_coach_id",
-    "pitching_ratings_vsr_control",
-    "pitching_ratings_vsr_pbabip",
-    "pitching_ratings_vsr_hra",
-    "pitching_ratings_vsr_stuff",
-    "pitching_ratings_vsl_control",
-    "pitching_ratings_vsl_pbabip",
-    "pitching_ratings_vsl_hra",
-    "pitching_ratings_vsl_stuff",
-    "pitching_ratings_misc_stamina",
-    "pitching_ratings_talent_control",
-    "pitching_ratings_talent_pbabip",
-    "pitching_ratings_talent_hra",
-    "pitching_ratings_talent_stuff",
-    "batting_ratings_vsr_power",
-    "batting_ratings_vsr_eye",
-    "batting_ratings_vsr_strikeouts",
-    "batting_ratings_vsr_gap",
-    "batting_ratings_vsr_babip",
-    "batting_ratings_vsl_power",
-    "batting_ratings_vsl_eye",
-    "batting_ratings_vsl_strikeouts",
-    "batting_ratings_vsl_gap",
-    "batting_ratings_vsl_babip",
-    "batting_ratings_talent_power",
-    "batting_ratings_talent_eye",
-    "batting_ratings_talent_strikeouts",
-    "batting_ratings_talent_gap",
-    "batting_ratings_talent_babip",
-    "running_ratings_speed",
-    "fielding_ratings_catcher_framing",
-    "fielding_ratings_catcher_ability",
-    "fielding_ratings_catcher_arm",
-    "fielding_ratings_outfield_range",
-    "fielding_ratings_outfield_arm",
-    "fielding_ratings_outfield_error",
-    "fielding_ratings_infield_range",
-    "fielding_ratings_infield_error",
-    "fielding_ratings_infield_arm",
-    "fielding_ratings_turn_doubleplay"
-]
+# Names match reader.py's DataFrame columns (sourced from player_ratings_history's
+# pitches_json), used by count_pitches() to tally how many pitches clear
+# PITCH_MINIMUM_RATING.
 
 PITCH_RATING_COLUMNS = [
-    "pitching_ratings_pitches_fastball",
-    "pitching_ratings_pitches_slider",
-    "pitching_ratings_pitches_curveball",
-    "pitching_ratings_pitches_screwball",
-    "pitching_ratings_pitches_forkball",
-    "pitching_ratings_pitches_changeup",
-    "pitching_ratings_pitches_sinker",
-    "pitching_ratings_pitches_splitter",
-    "pitching_ratings_pitches_knuckleball",
-    "pitching_ratings_pitches_cutter",
-    "pitching_ratings_pitches_circlechange",
-    "pitching_ratings_pitches_knucklecurve"
+    "fst", "snk", "cutt", "crv", "sld", "chg", "splt", "frk", "circhg", "scr", "kncrv", "knbl",
 ]
 
 POTENTIAL_PITCH_RATING_COLUMNS = [
-    'pitching_ratings_pitches_talent_fastball',
-    'pitching_ratings_pitches_talent_slider',
-    'pitching_ratings_pitches_talent_curveball',
-    'pitching_ratings_pitches_talent_screwball',
-    'pitching_ratings_pitches_talent_forkball',
-    'pitching_ratings_pitches_talent_changeup',
-    'pitching_ratings_pitches_talent_sinker',
-    'pitching_ratings_pitches_talent_splitter',
-    'pitching_ratings_pitches_talent_knuckleball',
-    'pitching_ratings_pitches_talent_cutter',
-    'pitching_ratings_pitches_talent_circlechange',
-    'pitching_ratings_pitches_talent_knucklecurve'
+    "potfst", "potsnk", "potcutt", "potcrv", "potsld", "potchg",
+    "potsplt", "potfrk", "potcirchg", "potscr", "potkncrv", "potknbl",
 ]
-
-# =================================
-# Column Renames by CSV
-# =================================
-
-# —— players.csv ——
-PLAYERS_COLUMN_RENAMES = {
-    "organization_id": "org"
-}
-
-# —— players_scouted_ratings.csv ——
-SCOUTED_RATINGS_RENAMES = {
-    "pitching_ratings_vsr_control": "ctrlR",
-    "pitching_ratings_vsr_pbabip": "pbabipR",
-    "pitching_ratings_vsr_hra": "hraR",
-    "pitching_ratings_vsr_stuff": "stuffR",
-    "pitching_ratings_vsl_control": "ctrlL",
-    "pitching_ratings_vsl_pbabip": "pbabipL",
-    "pitching_ratings_vsl_hra": "hraL",
-    "pitching_ratings_vsl_stuff": "stuffL",
-    "pitching_ratings_talent_control": "ctrlP",
-    "pitching_ratings_talent_pbabip": "pbabipP",
-    "pitching_ratings_talent_hra": "hraP",
-    "pitching_ratings_talent_stuff": "stuffP",
-    "pitching_ratings_misc_stamina": "stamina",
-    "batting_ratings_vsr_power": "powR",
-    "batting_ratings_vsr_eye": "eyeR",
-    "batting_ratings_vsr_strikeouts": "avkR",
-    "batting_ratings_vsr_gap": "gapR",
-    "batting_ratings_vsr_babip": "babipR",
-    "batting_ratings_vsl_power": "powL",
-    "batting_ratings_vsl_eye": "eyeL",
-    "batting_ratings_vsl_strikeouts": "avkL",
-    "batting_ratings_vsl_gap": "gapL",
-    "batting_ratings_vsl_babip": "babipL",
-    "batting_ratings_talent_power": "powP",
-    "batting_ratings_talent_eye": "eyeP",
-    "batting_ratings_talent_strikeouts": "avkP",
-    "batting_ratings_talent_gap": "gapP",
-    "batting_ratings_talent_babip": "babipP",
-    "fielding_ratings_catcher_framing": "Cfram",
-    "fielding_ratings_catcher_ability": "Cabil",
-    "fielding_ratings_catcher_arm": "Carm",
-    "fielding_ratings_outfield_range": "OFrange",
-    "fielding_ratings_outfield_arm": "OFarm",
-    "fielding_ratings_outfield_error": "OFerror",
-    "fielding_ratings_infield_range": "IFrange",
-    "fielding_ratings_infield_error": "IFerror",
-    "fielding_ratings_infield_arm": "IFarm",
-    "fielding_ratings_turn_doubleplay": "turnDP"
-}
-
-# ===================
-# Rename Helper
-# ===================
-
-def rename_columns(df, old, new):
-    if old in df.columns:
-        print(f"🔁 Renaming column: {old} → {new}")
-        return df.rename(columns={old: new})
-    else:
-        print(f"⚠️ Column {old} not found — skipping rename")
-        return df
 
 # ================================
 # Columns to Blank Before Export

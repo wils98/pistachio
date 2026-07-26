@@ -1,9 +1,10 @@
 import os
+import sqlite3
 import sys
-import time
+from datetime import datetime, timezone
 
-from config import filepath
-from reader import load_players, add_pitching_career_stats, add_hitting_career_stats, add_scouted_ratings, count_pitches, can_field, is_flagged
+from config import DB_PATH
+from reader import load_players, add_pitching_career_stats, add_hitting_career_stats, add_scouted_ratings, count_pitches, can_field, is_flagged, RATINGS_SOURCE
 from metrics_pitching import calc_pitching_metrics, calc_potential_pitching_metrics
 from metrics_hitting import calc_hitting_metrics, calc_potential_hitting_metrics
 from metrics_fielding import calc_fielding_metrics
@@ -11,39 +12,43 @@ from metrics_war import calc_war
 # from exporter import export_hitters
 from exporter import export_html_pages
 
-REQUIRED_CSVS = [
-    "players.csv",
-    "players_scouted_ratings.csv",
-    "players_career_batting_stats.csv",
-    "players_career_pitching_stats.csv",
-]
-
-# Running unattended on a timer against CSVs shipped from another machine means the
-# transfer can silently stop happening. Refuse to export from missing or stale input
-# rather than quietly re-serving old projections under a fresh-looking timestamp.
-MAX_INPUT_AGE_DAYS = float(os.environ.get("PISTACHIO_MAX_INPUT_AGE_DAYS", "3"))
+# Player data comes from psd-ootp's own DB, which is kept fresh by its own ingest
+# schedule (not ours to police) — but if that pipeline stalls, we'd otherwise keep
+# silently re-serving the same projections under a fresh-looking export timestamp.
+# Guard against that using the *real* wall-clock time the ratings were actually
+# fetched (raw_payload.fetched_at_utc), not the in-game date (player_ratings_
+# history.as_of_game_date is in OOTP's fictional calendar, not elapsed real time).
+MAX_DATA_AGE_DAYS = float(os.environ.get("PISTACHIO_MAX_DATA_AGE_DAYS", "3"))
 
 
-def check_input_ready():
-    missing = [name for name in REQUIRED_CSVS if not (filepath / name).is_file()]
-    if missing:
-        sys.exit(f"Missing input CSV(s) in {filepath}: {', '.join(missing)}")
+def check_data_ready():
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro&immutable=1", uri=True)
+        row = conn.execute("""
+            SELECT MAX(rp.fetched_at_utc)
+            FROM player_ratings_history r
+            JOIN raw_payload rp ON r.payload_id = rp.payload_id
+            WHERE r.source = ?
+        """, (RATINGS_SOURCE,)).fetchone()
+        conn.close()
+    except sqlite3.Error as exc:
+        sys.exit(f"Could not reach psd-ootp's DB at {DB_PATH}: {exc}")
 
-    max_age_seconds = MAX_INPUT_AGE_DAYS * 86400
-    now = time.time()
-    stale = [
-        name for name in REQUIRED_CSVS
-        if now - (filepath / name).stat().st_mtime > max_age_seconds
-    ]
-    if stale:
+    if row is None or row[0] is None:
+        sys.exit(f"No '{RATINGS_SOURCE}' ratings found in {DB_PATH} — nothing to project.")
+
+    fetched_at = datetime.strptime(row[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    age_days = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 86400
+    if age_days > MAX_DATA_AGE_DAYS:
         sys.exit(
-            f"Input CSV(s) older than {MAX_INPUT_AGE_DAYS:.0f} day(s) in {filepath}: "
-            f"{', '.join(stale)} — refusing to export from stale data."
+            f"Most recent '{RATINGS_SOURCE}' ratings in {DB_PATH} are {age_days:.1f} day(s) "
+            f"old (limit {MAX_DATA_AGE_DAYS:.0f}) — refusing to export from stale data. "
+            f"Check psd-ootp's own ingest timer (psd-ootp-ingest status)."
         )
 
 
 def main():
-    check_input_ready()
+    check_data_ready()
     df = load_players()
     df = add_pitching_career_stats(df)
     df = add_hitting_career_stats(df)

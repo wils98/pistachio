@@ -1,86 +1,170 @@
+import json
+import sqlite3
+
+import numpy as np
 import pandas as pd
-from pathlib import Path
 from config import (
-    filepath,
-    club_lookup,
-    PLAYERS_COLUMNS,
-    PLAYERS_COLUMN_RENAMES,
-    PITCHING_STATS_COLUMNS,
-    SCOUTED_RATINGS_COLUMNS,
+    DB_PATH,
     PITCH_RATING_COLUMNS,
     POTENTIAL_PITCH_RATING_COLUMNS,
-    SCOUTED_RATINGS_RENAMES,
-    rename_columns,
-    ID,
     PITCH_MINIMUM_RATING,
-    HITTING_STATS_COLUMNS,
     POSITION_THRESHOLDS,
     pistachio_filepath,
 )
 
+RATINGS_SOURCE = "osa"
+MLB_LEVEL_ID = 1
+OVERALL_SPLIT_ID = 1
+
+# Maps extra_json's raw (normalized) key -> pistachio's internal column name.
+# Everything here is a straight rename; no scale conversion, no polarity flip
+# (confirmed against psd-ootp's ingest/parse.py that avoid_k/ks is a bare alias).
+EXTRA_JSON_RENAMES = {
+    "pow_r": "powR", "pow_l": "powL",
+    "eye_r": "eyeR", "eye_l": "eyeL",
+    "gap_r": "gapR", "gap_l": "gapL",
+    "ks_r": "avkR", "ks_l": "avkL",
+    "babip_r": "babipR", "babip_l": "babipL",
+    "ctrl_r": "ctrlR", "ctrl_l": "ctrlL",
+    "stf_r": "stuffR", "stf_l": "stuffL",
+    "pbabip_r": "pbabipR", "pbabip_l": "pbabipL",
+    "hra_r": "hraR", "hra_l": "hraL",
+    "potbabip": "babipP", "pothra": "hraP", "potpbabip": "pbabipP",
+}
+
+# defense_json's raw key -> pistachio's internal column name.
+DEFENSE_JSON_RENAMES = {
+    "cfrm": "Cfram", "cblk": "Cabil", "carm": "Carm",
+    "ofr": "OFrange", "ofa": "OFarm", "ofe": "OFerror",
+    "ifr": "IFrange", "ife": "IFerror", "ifa": "IFarm", "tdp": "turnDP",
+}
+
+
+def _connect() -> sqlite3.Connection:
+    """Read-only connection — physically cannot write, mirrors psd-ootp's /api/sql."""
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro&immutable=1", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def load_players() -> pd.DataFrame:
-    file = filepath / 'players.csv'
-    df = pd.read_csv(file, usecols=PLAYERS_COLUMNS, low_memory=False)
-    # Remove retired players
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT p.player_id, p.first_name, p.last_name, p.retired,
+               p.organization_id, p.team_id,
+               COALESCE(t.nickname, 'Free') AS org
+        FROM player p
+        LEFT JOIN team t ON p.organization_id = t.team_id
+    """).fetchall()
+    conn.close()
+
+    df = pd.DataFrame([dict(r) for r in rows])
     df = df[df.retired != 1]
     df = df.drop(columns=["retired"])
-    # Rename columns
-    for old, new in PLAYERS_COLUMN_RENAMES.items():
-        df = rename_columns(df, old, new)
-    # Combine first and last name into a single 'name' column
     df["name"] = df["first_name"] + " " + df["last_name"]
-    df = df.drop(columns=["first_name", "last_name"])    
-    # Map numeric org values to team abbreviations using the club lookup
-    # first flag minor leaguers for whom team and organisaition IDs are different
-    df["minor"] = (df["org"] != df["team_id"]).astype(int)
-    df["org"] = df["org"].map(club_lookup)
-    # map numeric organization_id to abbreviation
+    df = df.drop(columns=["first_name", "last_name"])
+    # Minor-leaguers: assigned to an org whose active roster (team_id) differs from
+    # their current affiliate team — same "org vs team_id" comparison as before.
+    df["minor"] = (df["organization_id"] != df["team_id"]).astype(int)
+    df = df.drop(columns=["organization_id"])
     return df
+
 
 def add_pitching_career_stats(df: pd.DataFrame) -> pd.DataFrame:
-    file = filepath / 'players_career_pitching_stats.csv'
-    pitching_stats_df = pd.read_csv(file, usecols=PITCHING_STATS_COLUMNS, low_memory=False)
-    # Filter for MLB + combined L/R splits, and most recent season only
-    pitching_stats_df = pitching_stats_df[
-        (pitching_stats_df['level_id'] == 1) & 
-        (pitching_stats_df['split_id'] == 1)
-    ]
-    max_year = pitching_stats_df['year'].max()
-    pitching_stats_df = pitching_stats_df[pitching_stats_df['year'] == max_year]
-    # sum innings pitched by player_id and merge into main DataFrame
-    pitching_stats_df = pitching_stats_df.groupby('player_id')[['ip']].sum().reset_index()
-    df = pd.merge(df, pitching_stats_df, on='player_id', how='left')
-    df['ip'] = df['ip'].fillna(0).astype(int)
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT player_id, season_year, outs
+        FROM player_pitching_stats_history
+        WHERE level_id = ? AND split_id = ?
+    """, (MLB_LEVEL_ID, OVERALL_SPLIT_ID)).fetchall()
+    conn.close()
+
+    stats_df = pd.DataFrame([dict(r) for r in rows])
+    if stats_df.empty:
+        df["ip"] = 0
+        return df
+    max_year = stats_df["season_year"].max()
+    stats_df = stats_df[stats_df["season_year"] == max_year]
+    stats_df = stats_df.groupby("player_id")[["outs"]].sum().reset_index()
+    stats_df["ip"] = (stats_df["outs"] / 3).round(1)
+    stats_df = stats_df.drop(columns=["outs"])
+    df = pd.merge(df, stats_df, on="player_id", how="left")
+    df["ip"] = df["ip"].fillna(0)
     return df
+
 
 def add_hitting_career_stats(df: pd.DataFrame) -> pd.DataFrame:
-    file = filepath / 'players_career_batting_stats.csv'
-    hitting_stats_df = pd.read_csv(file, usecols=HITTING_STATS_COLUMNS, low_memory=False)
-    # Filter for MLB + combined L/R splits, and most recent season only
-    hitting_stats_df = hitting_stats_df[
-        (hitting_stats_df['level_id'] == 1) & 
-        (hitting_stats_df['split_id'] == 1)
-    ]
-    max_year = hitting_stats_df['year'].max()
-    hitting_stats_df = hitting_stats_df[hitting_stats_df['year'] == max_year]
-    # sum plate appearances by player_id and merge into main DataFrame
-    hitting_stats_df = hitting_stats_df.groupby('player_id')[['pa']].sum().reset_index()
-    df = pd.merge(df, hitting_stats_df, on='player_id', how='left')
-    df['pa'] = df['pa'].fillna(0).astype(int)
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT player_id, season_year, pa
+        FROM player_batting_stats_history
+        WHERE level_id = ? AND split_id = ?
+    """, (MLB_LEVEL_ID, OVERALL_SPLIT_ID)).fetchall()
+    conn.close()
+
+    stats_df = pd.DataFrame([dict(r) for r in rows])
+    if stats_df.empty:
+        df["pa"] = 0
+        return df
+    max_year = stats_df["season_year"].max()
+    stats_df = stats_df[stats_df["season_year"] == max_year]
+    stats_df = stats_df.groupby("player_id")[["pa"]].sum().reset_index()
+    df = pd.merge(df, stats_df, on="player_id", how="left")
+    df["pa"] = df["pa"].fillna(0).astype(int)
     return df
 
+
 def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
-    file = filepath / 'players_scouted_ratings.csv'
-    all_rating_columns = SCOUTED_RATINGS_COLUMNS + PITCH_RATING_COLUMNS + POTENTIAL_PITCH_RATING_COLUMNS
-    ratings_df = pd.read_csv(file, usecols=all_rating_columns, low_memory=False)
-    # Keep only ratings from your scouting director
-    ratings_df = ratings_df[ratings_df['scouting_coach_id'] == ID]
-    ratings_df = ratings_df.drop(columns=["scouting_coach_id"])
-    # Rename the column for clarity
-    for old, new in SCOUTED_RATINGS_RENAMES.items():
-        ratings_df = rename_columns(ratings_df, old, new)
+    """
+    Pulls each player's most recent OSA-sourced ratings snapshot. Ratings are
+    a mix of first-class columns (current + potential for the main hit/pitch
+    tools, stamina, speed) and JSON blobs (extra_json for handedness splits +
+    potential-babip/hra/pbabip, defense_json for fielding grades, pitches_json
+    for per-pitch-type grades) — unpacked here in Python rather than via SQL
+    json_extract(), so every source key stays visible in one place.
+    """
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT r.player_id, r.power_pot, r.eye_pot, r.avoid_k_pot, r.gap_pot,
+               r.control_pot, r.stuff_pot, r.stamina, r.speed,
+               r.defense_json, r.pitches_json, r.extra_json
+        FROM player_ratings_history r
+        WHERE r.source = ?
+          AND r.as_of_game_date = (
+              SELECT MAX(r2.as_of_game_date) FROM player_ratings_history r2
+              WHERE r2.player_id = r.player_id AND r2.source = r.source
+          )
+    """, (RATINGS_SOURCE,)).fetchall()
+    conn.close()
+
+    records = []
+    for row in rows:
+        record = {
+            "player_id": row["player_id"],
+            "powP": row["power_pot"], "eyeP": row["eye_pot"],
+            "avkP": row["avoid_k_pot"], "gapP": row["gap_pot"],
+            "ctrlP": row["control_pot"], "stuffP": row["stuff_pot"],
+            "stamina": row["stamina"], "speed": row["speed"],
+        }
+
+        extra = json.loads(row["extra_json"] or "{}")
+        for raw_key, new_key in EXTRA_JSON_RENAMES.items():
+            record[new_key] = extra.get(raw_key)
+
+        defense = json.loads(row["defense_json"] or "{}")
+        for raw_key, new_key in DEFENSE_JSON_RENAMES.items():
+            record[new_key] = defense.get(raw_key)
+
+        pitches = json.loads(row["pitches_json"] or "{}")
+        for col in PITCH_RATING_COLUMNS + POTENTIAL_PITCH_RATING_COLUMNS:
+            record[col] = pitches.get(col)
+
+        records.append(record)
+
+    ratings_df = pd.DataFrame(records)
     df = pd.merge(df, ratings_df, on="player_id", how="left")
     return df
+
 
 # count 'how many pitches' a pitcher has got based on minimum threshold ratings
 def count_pitches(df: pd.DataFrame) -> pd.DataFrame:
@@ -91,6 +175,7 @@ def count_pitches(df: pd.DataFrame) -> pd.DataFrame:
     df = df.drop(columns=PITCH_RATING_COLUMNS)
     df = df.drop(columns=POTENTIAL_PITCH_RATING_COLUMNS)
     return df
+
 
 # determine whether a player 'can field' at a given position based on minimum threshold ratings
 def can_field(df: pd.DataFrame) -> pd.DataFrame:
@@ -104,8 +189,8 @@ def can_field(df: pd.DataFrame) -> pd.DataFrame:
     df["field"] = df.apply(evaluate_row, axis=1)
     return df
 
+
 # Add a flag column for names listed in flagged.txt
-import numpy as np
 def is_flagged(df: pd.DataFrame) -> pd.DataFrame:
     # Read player_ids from text file and convert to integers
     with open(pistachio_filepath / 'flagged.txt', 'r') as f:
