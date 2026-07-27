@@ -71,11 +71,21 @@ def load_players() -> pd.DataFrame:
 
 
 def add_pitching_career_stats(df: pd.DataFrame) -> pd.DataFrame:
+    # Each as_of_game_date row is a season-to-date CUMULATIVE snapshot, not a
+    # per-period delta — summing across snapshot dates would double/triple-count
+    # every player. Take only each player's most recent snapshot (per season);
+    # summing across team_id/stint within that single date is still correct and
+    # intentional (combines multi-team seasons).
     conn = _connect()
     rows = conn.execute("""
         SELECT player_id, season_year, outs
-        FROM player_pitching_stats_history
+        FROM player_pitching_stats_history s
         WHERE level_id = ? AND split_id = ?
+          AND as_of_game_date = (
+              SELECT MAX(s2.as_of_game_date) FROM player_pitching_stats_history s2
+              WHERE s2.player_id = s.player_id AND s2.level_id = s.level_id
+                AND s2.split_id = s.split_id AND s2.season_year = s.season_year
+          )
     """, (MLB_LEVEL_ID, OVERALL_SPLIT_ID)).fetchall()
     conn.close()
 
@@ -94,11 +104,17 @@ def add_pitching_career_stats(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_hitting_career_stats(df: pd.DataFrame) -> pd.DataFrame:
+    # Same cumulative-snapshot reasoning as add_pitching_career_stats() above.
     conn = _connect()
     rows = conn.execute("""
         SELECT player_id, season_year, pa
-        FROM player_batting_stats_history
+        FROM player_batting_stats_history s
         WHERE level_id = ? AND split_id = ?
+          AND as_of_game_date = (
+              SELECT MAX(s2.as_of_game_date) FROM player_batting_stats_history s2
+              WHERE s2.player_id = s.player_id AND s2.level_id = s.level_id
+                AND s2.split_id = s.split_id AND s2.season_year = s.season_year
+          )
     """, (MLB_LEVEL_ID, OVERALL_SPLIT_ID)).fetchall()
     conn.close()
 

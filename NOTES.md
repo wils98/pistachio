@@ -115,24 +115,57 @@ so neither blocks or invalidates the other).
   still upstream's own league's values, just being fed rescaled input instead of crashing on it.
 - **Workstream B (real calibration)** — new `tools/calibrate_league_constants.py`, a human-run
   script (not wired into the live pipeline — these constants should stay reviewed literals, not
-  silently drift as more games get played). Computed from real PSD 2104-season stats
-  (129,606 PA/BF): `BASE_HITTING_RATES`, `BASE_PITCHING_RATES`, `LEAGUE_WOBA` (cross-checked two
-  independent ways — pistachio's own wOBA weights vs. well-known reference weights — 0.3284 vs
-  0.3297, a 0.0012 gap, well inside plausible range), `LEAGUE_RUNS_PER_PA`. Internal consistency
-  check for free: pitching's `hr_vs_baserate`/`bb_vs_baserate`/`k_vs_baserate` matched hitting's
-  `hr_pct`/`bb_pct`/`k_pct` to 4 decimals — expected, since every HR/BB/K is the same event
-  counted from both sides, and it confirms the query logic is sound. `RUNS_PER_WIN` needed a
-  different source: `team_batting_stats_history.g` (games) looked unreliably populated this
-  early in the season, so the script instead takes `--runs-per-team-per-game` from OOTP's own
-  in-game league history report (user-supplied: 5.16 for 2104) and applies Tango's commonly-cited
-  `RPW = 1.5*RPG + 3` — computed value **10.74**, transcribed into `config.py` along with
-  everything else above.
+  silently drift as more games get played). Computed `BASE_HITTING_RATES`, `BASE_PITCHING_RATES`,
+  `LEAGUE_WOBA`, `LEAGUE_RUNS_PER_PA` from real PSD 2104-season stats — **see Pass 4 below: the
+  first version of this used the wrong tables and was off by >2x, caught and fixed same day.**
+  `RUNS_PER_WIN` needed a different source entirely: `team_batting_stats_history.g` (games)
+  looked unreliably populated this early in the season, so the script instead takes
+  `--runs-per-team-per-game` from OOTP's own in-game league history report (user-supplied: 5.16
+  for 2104) and applies Tango's commonly-cited `RPW = 1.5*RPG + 3` — **10.74**, transcribed into
+  `config.py`.
 - **Verified**: Workstream A alone — full run, 17,807 players, 0% NaN on `best`/`war_hitting`/
   `war_pitching`, Spearman(`best` WAR, real `Overall` grade) = 0.604 (p≈0), Spearman(`bestP` WAR,
   real `Potential` grade) = 0.307 (p≈0) — both positive and highly significant, confirming the
   stopgap preserves sensible relative ordering. Combined (both workstreams merged): same
   zero-NaN result, `wOBA` range 0.213–0.576 (8,976 unique values, not clustered), `best` WAR
   range -5.9–17.3 — no walls of identical values, no runaway outliers.
+
+**Pass 4 — found and worked around a real bug in psd-ootp's own ingest (not pistachio's):**
+
+The user spotted Workstream B's PA figure (129,606) didn't match OOTP's own in-game "Team
+Statistics" report for the same date (46,583, screenshot-verified). Chasing it down:
+
+- `player_batting_stats_history`/`player_pitching_stats_history` store the **wrong column as
+  `player_id`**. StatsPlus's `playerbatstatsv2`/`playerpitchstatsv2` CSVs have two ID columns —
+  `id` (OOTP's own internal per-stat-row surrogate key, per its API docs: *"matches the
+  `players_career_batting_stats` table in the same order it's dumped from OOTP"*) and `player_id`
+  (the real player) — and psd-ootp's parser appears to store `id`, not `player_id`. Confirmed:
+  `player.player_id` ranges 26–92,928 (17,807 real players); the stats tables' `player_id` ranges
+  393–701,903, and 98% of its distinct values (1,401/1,424 in one sample) don't exist in `player`
+  at all. Directly matched specific bad values (2174, 2901, …) to the raw archived payload's `id`
+  column for real players 59/81.
+- **Reported to whoever owns psd-ootp's ingest** (separate system, separate fix — not touched
+  here). Likely fix location: `src/ingest/parse.py`'s handling of `playerbatstatsv2`/
+  `playerpitchstatsv2` (and possibly `playerfieldstatsv2` — same risk, not independently
+  checked). Once fixed, `psd-ootp-ingest reparse` can backfill the 3 already-archived snapshots
+  from `raw_payload.body` without re-fetching from StatsPlus.
+- **Worked around for our purposes**: `team_batting_stats_history`/`team_pitching_stats_history`
+  have no such column and are unaffected — verified to match the in-game report exactly (46,583
+  total PA, per-team breakdown matched precisely, e.g. Orlando 1,512). `calibrate_league_constants.py`
+  now sources from those tables instead (team pitching stats have no `bf` column — since
+  league-wide `sum(batters faced) == sum(plate appearances)` exactly, hitting's PA is used as the
+  stand-in denominator). Final corrected constants, all now matching the real 46,583-PA sample:
+  `hr_pct_baserate=0.0284`, `k_pct_baserate=0.1729`, `bb_pct_baserate=0.0796`,
+  `1b_pct_baserate=0.1799`, `2b_pct_baserate=0.0418`, `3b_pct_baserate=0.0027`,
+  `LEAGUE_RUNS_PER_PA=0.1293`, `LEAGUE_WOBA=0.3307` (cross-checked 0.3319 the independent way).
+  `RUNS_PER_WIN=10.74` unaffected (never touched the buggy tables).
+- **`reader.py`'s per-player `pa`/`ip` columns are still built from the buggy tables** — they
+  were already fixed this pass to dedupe by each player's latest snapshot (a real, separate,
+  necessary fix — snapshots are cumulative-to-date, not deltas, so summing across all 3 dates
+  double/triple-counted even before this bug was found), but that fix can't repair data sourced
+  from the wrong `player_id` in the first place. Left as-is deliberately: once psd-ootp's parser
+  is fixed and reparsed, these columns should self-correct with no further pistachio changes
+  needed, since the dedup logic itself is already correct.
 
 ## Current state (as of this writing)
 
@@ -151,6 +184,11 @@ so neither blocks or invalidates the other).
   them *runnable* against PSD data (correct relative ordering), not *accurate* — absolute
   numbers stay untrustworthy until the tables are rebuilt natively for the 1-100 domain (see
   below). This is the real remaining gap, not a data-plumbing one anymore.
+- **`pa`/`ip` display columns are unreliable** until psd-ootp's ingest parser bug (Pass 4) is
+  fixed and reparsed — they're sourced from `player_batting_stats_history`/
+  `player_pitching_stats_history`, which currently store the wrong `player_id`. Doesn't affect
+  any projection math (pistachio's model is entirely rating-driven, these are display-only), but
+  the numbers shown in the exported tables for current-season PA/IP are not trustworthy today.
 - **`team_managed` is still `'CHC'`** (upstream's placeholder) — inert either way, isn't
   referenced anywhere in the codebase outside its own definition.
 - **`/data-pistachio` has no independent backup** — plain rootfs directory, not a Proxmox bind

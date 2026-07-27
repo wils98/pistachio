@@ -18,6 +18,20 @@ trustworthy regardless of what the DB's games column looks like. Uses Tango's
 commonly-cited RPW = 1.5 * RPG_per_team + 3 (see
 https://library.fangraphs.com/misc/war/converting-runs-to-wins/).
 
+IMPORTANT — deliberately uses team_*_stats_history, not player_*_stats_history:
+psd-ootp's ingest has a confirmed bug where player_batting_stats_history /
+player_pitching_stats_history store the wrong column as player_id (StatsPlus's
+playerbatstatsv2/playerpitchstatsv2 CSVs have both an `id` — OOTP's internal
+per-stat-row surrogate key — and a `player_id` column; the parser appears to
+store `id`). That inflates any per-player aggregate built from those tables
+(confirmed: summing player-level PA gave 105,551 against a real league total of
+46,583, verified against both the in-game Team Statistics report and this
+table). team_batting_stats_history/team_pitching_stats_history have no such
+column and are unaffected — confirmed to match the in-game report exactly
+(46,583 PA, per-team breakdown matched precisely). Bug reported separately for
+a fix in psd-ootp's own ingest parser; once fixed and reparsed, reader.py's
+per-player pa/ip columns should self-correct without further changes here.
+
 Usage:
     PISTACHIO_DB_PATH=/path/to/ootp.db python tools/calibrate_league_constants.py \\
         --runs-per-team-per-game 5.16
@@ -32,7 +46,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import DB_PATH, BATTING_WOBA_WEIGHTS
 
-MLB_LEVEL_ID = 1
 OVERALL_SPLIT_ID = 1
 
 # Well-known, independently-sourced real-MLB wOBA linear weights (Tom Tango-style,
@@ -54,17 +67,24 @@ def connect():
 
 def compute_hitting_rates(conn) -> dict:
     max_year = conn.execute(
-        "SELECT MAX(season_year) FROM player_batting_stats_history WHERE level_id=? AND split_id=?",
-        (MLB_LEVEL_ID, OVERALL_SPLIT_ID),
+        "SELECT MAX(season_year) FROM team_batting_stats_history WHERE split_id=?",
+        (OVERALL_SPLIT_ID,),
     ).fetchone()[0]
 
+    # Same cumulative-snapshot-per-as_of_game_date shape as the player-level tables
+    # (see module docstring for why player-level isn't used) — take only the single
+    # latest snapshot, not a sum across all of them.
     row = conn.execute(
         """
         SELECT SUM(pa), SUM(h), SUM(d), SUM(t), SUM(hr), SUM(bb), SUM(k), SUM(r)
-        FROM player_batting_stats_history
-        WHERE level_id=? AND split_id=? AND season_year=?
+        FROM team_batting_stats_history
+        WHERE split_id=? AND season_year=?
+          AND as_of_game_date = (
+              SELECT MAX(as_of_game_date) FROM team_batting_stats_history
+              WHERE split_id=? AND season_year=?
+          )
         """,
-        (MLB_LEVEL_ID, OVERALL_SPLIT_ID, max_year),
+        (OVERALL_SPLIT_ID, max_year, OVERALL_SPLIT_ID, max_year),
     ).fetchone()
     pa, h, d, t, hr, bb, k, r = row
     singles = h - d - t - hr
@@ -82,21 +102,28 @@ def compute_hitting_rates(conn) -> dict:
     }
 
 
-def compute_pitching_rates(conn) -> dict:
+def compute_pitching_rates(conn, bf: int) -> dict:
+    """bf (batters faced) comes from the hitting side's PA — team_pitching_stats_history
+    has no bf column, but league-wide sum(batters faced) == sum(plate appearances)
+    exactly (every PA is also a batter faced), so hitting's PA is a correct stand-in."""
     max_year = conn.execute(
-        "SELECT MAX(season_year) FROM player_pitching_stats_history WHERE level_id=? AND split_id=?",
-        (MLB_LEVEL_ID, OVERALL_SPLIT_ID),
+        "SELECT MAX(season_year) FROM team_pitching_stats_history WHERE split_id=?",
+        (OVERALL_SPLIT_ID,),
     ).fetchone()[0]
 
     row = conn.execute(
         """
-        SELECT SUM(bf), SUM(ha), SUM(hra), SUM(bb), SUM(k)
-        FROM player_pitching_stats_history
-        WHERE level_id=? AND split_id=? AND season_year=?
+        SELECT SUM(ha), SUM(hra), SUM(bb), SUM(k)
+        FROM team_pitching_stats_history
+        WHERE split_id=? AND season_year=?
+          AND as_of_game_date = (
+              SELECT MAX(as_of_game_date) FROM team_pitching_stats_history
+              WHERE split_id=? AND season_year=?
+          )
         """,
-        (MLB_LEVEL_ID, OVERALL_SPLIT_ID, max_year),
+        (OVERALL_SPLIT_ID, max_year, OVERALL_SPLIT_ID, max_year),
     ).fetchone()
-    bf, ha, hra, bb, k = row
+    ha, hra, bb, k = row
     h_nothr = ha - hra
 
     return {
@@ -138,7 +165,7 @@ def main():
     args = parse_args()
     conn = connect()
     hitting = compute_hitting_rates(conn)
-    pitching = compute_pitching_rates(conn)
+    pitching = compute_pitching_rates(conn, bf=hitting["pa"])
     conn.close()
 
     pistachio_weights = {

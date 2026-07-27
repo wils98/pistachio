@@ -123,13 +123,15 @@ COLUMNS_TO_BLANK_BEFORE_EXPORT = [
 # wOBA and wRC+ weights
 # ============================
 
-# PSD league-wide average rates, 2104 season (tools/calibrate_league_constants.py),
-# not upstream's — real hr/bb/k allowed and non-HR-hit rates per batter faced.
+# PSD league-wide average rates, 2104 season (tools/calibrate_league_constants.py,
+# team-level tables — see that script's docstring re: a confirmed player_id bug in
+# psd-ootp's ingest for the per-player stats tables), not upstream's — real hr/bb/k
+# allowed and non-HR-hit rates per batter faced.
 BASE_PITCHING_RATES = {
-    "hr_vs_baserate": 0.0286,
-    "bb_vs_baserate": 0.0786,
-    "k_vs_baserate": 0.1715,
-    "h_nothr_vs_baserate": 0.2226
+    "hr_vs_baserate": 0.0284,
+    "bb_vs_baserate": 0.0796,
+    "k_vs_baserate": 0.1729,
+    "h_nothr_vs_baserate": 0.2244
 }
 
 # Run-Value Weights for Pitching wOBA (pwOBA) calculation
@@ -139,15 +141,16 @@ PITCHING_WOBA_WEIGHTS = {
     "h_nothr_vs_wOBA_weight": 0.99
 }
 
-# PSD league-wide average rates, 2104 season (tools/calibrate_league_constants.py),
-# not upstream's — real hr/k/bb/1b/2b/3b rates per plate appearance.
+# PSD league-wide average rates, 2104 season (tools/calibrate_league_constants.py,
+# team-level tables — see that script's docstring), not upstream's — real
+# hr/k/bb/1b/2b/3b rates per plate appearance.
 BASE_HITTING_RATES = {
-    "hr_pct_baserate": 0.0286,
-    "k_pct_baserate": 0.1715,
-    "bb_pct_baserate": 0.0786,
-    "1b_pct_baserate": 0.1784,
-    "2b_pct_baserate": 0.0416,
-    "3b_pct_baserate": 0.0025
+    "hr_pct_baserate": 0.0284,
+    "k_pct_baserate": 0.1729,
+    "bb_pct_baserate": 0.0796,
+    "1b_pct_baserate": 0.1799,
+    "2b_pct_baserate": 0.0418,
+    "3b_pct_baserate": 0.0027
 }
 
 # Run-Value Weights for hitter wOBA calculation
@@ -159,12 +162,12 @@ BATTING_WOBA_WEIGHTS = {
     "3b_pct_wOBA_weight": 1.56
 }
 
-# league context for wRC+ — PSD, 2104 season (tools/calibrate_league_constants.py),
-# cross-checked two ways (pistachio's own wOBA weights vs. independent reference
-# weights): 0.3284 vs 0.3297, well within a plausible baseball range.
-LEAGUE_WOBA        = 0.3284
+# league context for wRC+ — PSD, 2104 season (tools/calibrate_league_constants.py,
+# team-level tables), cross-checked two ways (pistachio's own wOBA weights vs.
+# independent reference weights): 0.3307 vs 0.3319, well within a plausible range.
+LEAGUE_WOBA        = 0.3307
 WOBA_SCALE         = 1.15         # from Tango book — not league-specific, unchanged
-LEAGUE_RUNS_PER_PA = 0.1280
+LEAGUE_RUNS_PER_PA = 0.1293
 
 # ===============================================
 # Pitching wOBA component adjustments by rating
