@@ -159,18 +159,27 @@ Statistics" report for the same date (46,583, screenshot-verified). Chasing it d
   `1b_pct_baserate=0.1799`, `2b_pct_baserate=0.0418`, `3b_pct_baserate=0.0027`,
   `LEAGUE_RUNS_PER_PA=0.1293`, `LEAGUE_WOBA=0.3307` (cross-checked 0.3319 the independent way).
   `RUNS_PER_WIN=10.74` unaffected (never touched the buggy tables).
-- **`reader.py`'s per-player `pa`/`ip` columns are still built from the buggy tables** — they
-  were already fixed this pass to dedupe by each player's latest snapshot (a real, separate,
-  necessary fix — snapshots are cumulative-to-date, not deltas, so summing across all 3 dates
-  double/triple-counted even before this bug was found), but that fix can't repair data sourced
-  from the wrong `player_id` in the first place. Left as-is deliberately: once psd-ootp's parser
-  is fixed and reparsed, these columns should self-correct with no further pistachio changes
-  needed, since the dedup logic itself is already correct.
+- **`reader.py`'s per-player `pa`/`ip` columns were built from the buggy tables** — already fixed
+  this pass to dedupe by each player's latest snapshot (a real, separate, necessary fix —
+  snapshots are cumulative-to-date, not deltas, so summing across all 3 dates double/triple-
+  counted even before this bug was found), but that fix couldn't repair data sourced from the
+  wrong `player_id` in the first place.
+
+**RESOLVED same day** — psd-ootp's ingest parser fixed and reparsed. Verified directly against
+the live DB: `player_batting_stats_history.player_id` now ranges 59–87,017 (was 393–701,903),
+zero orphaned IDs against the `player` table (was 98%), 487 distinct players (a realistic
+number, down from the inflated 1,424). Confirmed `reader.py`'s `pa`/`ip` columns — no further
+pistachio changes needed, exactly as predicted: `sum(pa) = 46,583`, an exact match to the
+authoritative total. `sum(ip) = 10,438.9`, consistent with ~32 teams × ~37 games × 9 innings.
+Live pages re-exported on the box with correct data. `calibrate_league_constants.py` still uses
+the team-level tables (no reason to switch back — already verified correct and simpler), but
+player-level tables are confirmed usable again for anything else that needs per-player
+granularity.
 
 ## Current state (as of this writing)
 
-- `pistachio-serve.service`: **running** on the box, still serving Pass-1 sample/placeholder
-  data — hasn't been re-run against Pass 2/3's changes yet.
+- `pistachio-serve.service`: **running** on the box, serving real projections against live PSD
+  data (re-exported after Pass 4's fixes) — `pa`/`ip` display columns are now correct too.
 - `pistachio-run.timer`: **disabled**, unchanged from Pass 1.
 - `/data-pistachio/{input,output}` and the old `PISTACHIO_INPUT_DIR`/
   `PISTACHIO_MAX_INPUT_AGE_DAYS` env vars are now **dead weight** — no longer read by any code
@@ -184,11 +193,6 @@ Statistics" report for the same date (46,583, screenshot-verified). Chasing it d
   them *runnable* against PSD data (correct relative ordering), not *accurate* — absolute
   numbers stay untrustworthy until the tables are rebuilt natively for the 1-100 domain (see
   below). This is the real remaining gap, not a data-plumbing one anymore.
-- **`pa`/`ip` display columns are unreliable** until psd-ootp's ingest parser bug (Pass 4) is
-  fixed and reparsed — they're sourced from `player_batting_stats_history`/
-  `player_pitching_stats_history`, which currently store the wrong `player_id`. Doesn't affect
-  any projection math (pistachio's model is entirely rating-driven, these are display-only), but
-  the numbers shown in the exported tables for current-season PA/IP are not trustworthy today.
 - **`team_managed` is still `'CHC'`** (upstream's placeholder) — inert either way, isn't
   referenced anywhere in the codebase outside its own definition.
 - **`/data-pistachio` has no independent backup** — plain rootfs directory, not a Proxmox bind
