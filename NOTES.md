@@ -93,55 +93,92 @@ This means recalibrating the model isn't just "get more accurate numbers for PSD
 prerequisite for the pipeline to produce *any* output at all against real PSD data. Not
 attempted in this pass (explicitly out of scope for "wire up the data source" — see plan).
 
+**Pass 3 — unblock the crash (stopgap) + recalibrate the portable constants (real), in parallel:**
+
+Two independent workstreams, run together deliberately (see the approved plan for the reasoning
+on why they don't interact — base-rate changes are purely additive and can't reorder players,
+so neither blocks or invalidates the other).
+
+- **Workstream A (interim stopgap, NOT real calibration)** — `reader.py` gained
+  `apply_native_scale_stopgap()`, called in `main.py` right after `add_scouted_ratings()`.
+  Rescales every rating column feeding a table lookup or threshold (hit/pitch tools + splits +
+  potential, fielding grades, pitch-type grades, stamina, speed) to its league-wide percentile,
+  mapped onto 20-80 and rounded to the nearest 5 — uniform target domain across all columns so
+  `POSITION_THRESHOLDS`/`PITCH_MINIMUM_RATING` (bare thresholds outside any table) stay
+  meaningful without their own edits. This alone fixes the crash: every value now lands on an
+  exact table key. `metrics_pitching.py` also gained a shared `_lookup_adjustment()` helper
+  (replacing duplicated logic in both `calc_pitching_metrics()` and
+  `calc_potential_pitching_metrics()`) that fixes two bugs at the same time: NaN now defaults to
+  the floor bucket (matching `metrics_hitting.py`'s pattern) instead of the amplified
+  below-floor penalty, and `Stamina`'s previously-silent skip-on-miss now clamps like every
+  other category. **Still not real calibration** — the regression coefficients themselves are
+  still upstream's own league's values, just being fed rescaled input instead of crashing on it.
+- **Workstream B (real calibration)** — new `tools/calibrate_league_constants.py`, a human-run
+  script (not wired into the live pipeline — these constants should stay reviewed literals, not
+  silently drift as more games get played). Computed from real PSD 2104-season stats
+  (129,606 PA/BF): `BASE_HITTING_RATES`, `BASE_PITCHING_RATES`, `LEAGUE_WOBA` (cross-checked two
+  independent ways — pistachio's own wOBA weights vs. well-known reference weights — 0.3284 vs
+  0.3297, a 0.0012 gap, well inside plausible range), `LEAGUE_RUNS_PER_PA`. Internal consistency
+  check for free: pitching's `hr_vs_baserate`/`bb_vs_baserate`/`k_vs_baserate` matched hitting's
+  `hr_pct`/`bb_pct`/`k_pct` to 4 decimals — expected, since every HR/BB/K is the same event
+  counted from both sides, and it confirms the query logic is sound. `RUNS_PER_WIN` needed a
+  different source: `team_batting_stats_history.g` (games) looked unreliably populated this
+  early in the season, so the script instead takes `--runs-per-team-per-game` from OOTP's own
+  in-game league history report (user-supplied: 5.16 for 2104) and applies Tango's commonly-cited
+  `RPW = 1.5*RPG + 3` — computed value **10.74**, transcribed into `config.py` along with
+  everything else above.
+- **Verified**: Workstream A alone — full run, 17,807 players, 0% NaN on `best`/`war_hitting`/
+  `war_pitching`, Spearman(`best` WAR, real `Overall` grade) = 0.604 (p≈0), Spearman(`bestP` WAR,
+  real `Potential` grade) = 0.307 (p≈0) — both positive and highly significant, confirming the
+  stopgap preserves sensible relative ordering. Combined (both workstreams merged): same
+  zero-NaN result, `wOBA` range 0.213–0.576 (8,976 unique values, not clustered), `best` WAR
+  range -5.9–17.3 — no walls of identical values, no runaway outliers.
+
 ## Current state (as of this writing)
 
 - `pistachio-serve.service`: **running** on the box, still serving Pass-1 sample/placeholder
-  data — hasn't been re-run against the new DB-backed `reader.py` yet.
+  data — hasn't been re-run against Pass 2/3's changes yet.
 - `pistachio-run.timer`: **disabled**, unchanged from Pass 1.
 - `/data-pistachio/{input,output}` and the old `PISTACHIO_INPUT_DIR`/
   `PISTACHIO_MAX_INPUT_AGE_DAYS` env vars are now **dead weight** — no longer read by any code
   path. Harmless to leave in place; optional cleanup, not done automatically.
-- Box's `.env` still has the Pass-1 variables and needs updating to `PISTACHIO_DB_PATH`/
-  `PISTACHIO_MAX_DATA_AGE_DAYS` before `main.py` will run there.
+- Box's `.env` needs the Pass 2 update (`PISTACHIO_DB_PATH`/`PISTACHIO_MAX_DATA_AGE_DAYS`)
+  before `main.py` will run there — see deploy steps.
 
 ## Known limitations / what won't work yet
 
-- **The model cannot produce output against real PSD data** — see the 1-100/20-80 finding
-  above. This is the actual blocker now, not data plumbing.
-- **`team_managed` is still `'CHC'`** (upstream's placeholder) — though it turns out this
-  constant isn't referenced anywhere in the codebase at all (grepped: only appears in its own
-  `config.py` definition), so it's currently inert either way.
-- **Inherited correctness bug, not yet fixed**: the same `metrics_pitching.py` NaN-handling
-  issue flagged in the original review — a missing rating is treated as *worse than the bottom
-  of the table* (10x-amplified penalty) rather than defaulting to average. Still open.
+- **The regression tables are still upstream's own league's coefficients.** Workstream A makes
+  them *runnable* against PSD data (correct relative ordering), not *accurate* — absolute
+  numbers stay untrustworthy until the tables are rebuilt natively for the 1-100 domain (see
+  below). This is the real remaining gap, not a data-plumbing one anymore.
+- **`team_managed` is still `'CHC'`** (upstream's placeholder) — inert either way, isn't
+  referenced anywhere in the codebase outside its own definition.
 - **`/data-pistachio` has no independent backup** — plain rootfs directory, not a Proxmox bind
-  mount. Now moot for input (nothing reads it), still relevant for output if that ever holds
+  mount. Moot for input (nothing reads it), still relevant for output if that ever holds
   something not trivially regenerable.
 - **No independent sudoers scope** for `pistachio-*` units — restarts/reinstalls always need an
   interactive password.
-- **Only tested against a full real player pool for the reader layer**, not the full metrics
-  pipeline (blocked by the scale issue above) — so actual runtime/memory behavior of
-  `metrics_*.py`'s row-wise `.apply()` calls against ~18k rows is still unverified.
 - **No tests.**
 
 ## What's needed to calibrate the model to the PSD league
 
-1. ~~Verify real field names before writing anything~~ — **done, see above.** Also surfaced the
-   1-100 scale finding, which turned out to be the more load-bearing discovery.
-2. **Rebuild the regression tables against a 1-100 domain**, not just retune their values.
-   `BATTING_COMPONENTS_ADJUST_MAP`, `PITCHING_COMPONENTS_ADJUST_MAP`,
+1. ~~Verify real field names before writing anything~~ — **done.** Surfaced the 1-100 scale
+   finding, the more load-bearing discovery.
+2. ~~Recalibrate the directly-portable constants~~ — **done, Pass 3 Workstream B.**
+3. ~~Unblock the crash so the pipeline can run at all~~ — **done (interim stopgap), Pass 3
+   Workstream A.** Not the same as real calibration — see Known Limitations.
+4. **Rebuild the regression tables natively for the 1-100 domain** — the real fix Workstream A
+   stands in for. `BATTING_COMPONENTS_ADJUST_MAP`, `PITCHING_COMPONENTS_ADJUST_MAP`,
    `FIELDING_RUN_VALUES_VS_REPLACEMENT`, `POSITION_THRESHOLDS`, `PITCH_MINIMUM_RATING` all need
-   re-keying to the actual scale PSD ratings come in on — this is a bigger structural change
-   than "swap in new coefficients at the same bucket keys," which was the original assumption.
-3. **Recalibrate the directly-portable constants**: `LEAGUE_WOBA`, `LEAGUE_RUNS_PER_PA`,
-   `BASE_HITTING_RATES`, `BASE_PITCHING_RATES`, `RUNS_PER_WIN` — PSD's real league-average
-   numbers, no regression required.
-4. **Refit the `RUNS_PER_GAME_*_COEFF`/`_CONST` regression** and the deep tables from point 2
+   re-keying and refitting to PSD's actual scale and league behavior — not just new coefficients
+   at the same bucket keys. Once this lands, Workstream A's `apply_native_scale_stopgap()` call
+   in `main.py` should be deleted (it's isolated to one function, one call site, by design).
+5. **Refit the `RUNS_PER_GAME_*_COEFF`/`_CONST` regression** and the deep tables from point 4
    against real PSD (ratings snapshot → subsequent performance) pairs. psd-ootp's DB has the
-   right shape for this (point-in-time snapshots joinable to career stat history) but only ~3
-   snapshot dates exist so far, spanning ~3 in-game weeks — needs a full season or more before
-   there's enough spread and sample size to regress against.
-5. **Fielding "potential" needs different treatment than hit/pitch** — per league clarification,
+   right shape (point-in-time snapshots joinable to career stat history) but only ~3 snapshot
+   dates exist so far, spanning ~3 in-game weeks — needs a full season or more before there's
+   enough spread and sample size to regress against.
+6. **Fielding "potential" needs different treatment than hit/pitch** — per league clarification,
    OOTP's "potential position rating" is a formula (current fielding + accumulated playing
    time), not an independently scouted ceiling. Pistachio's `*P`-column pattern for hit/pitch
    potential doesn't have a natural fielding equivalent. Open design question, not decided.

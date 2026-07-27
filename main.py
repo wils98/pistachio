@@ -4,7 +4,7 @@ import sys
 from datetime import datetime, timezone
 
 from config import DB_PATH
-from reader import load_players, add_pitching_career_stats, add_hitting_career_stats, add_scouted_ratings, count_pitches, can_field, is_flagged, RATINGS_SOURCE
+from reader import load_players, add_pitching_career_stats, add_hitting_career_stats, add_scouted_ratings, apply_native_scale_stopgap, count_pitches, can_field, is_flagged, RATINGS_SOURCE
 from metrics_pitching import calc_pitching_metrics, calc_potential_pitching_metrics
 from metrics_hitting import calc_hitting_metrics, calc_potential_hitting_metrics
 from metrics_fielding import calc_fielding_metrics
@@ -53,6 +53,7 @@ def main():
     df = add_pitching_career_stats(df)
     df = add_hitting_career_stats(df)
     df = add_scouted_ratings(df)
+    df = apply_native_scale_stopgap(df)  # TEMPORARY — see reader.py / NOTES.md
     df = count_pitches(df)
     df = can_field(df)
     df = is_flagged(df)

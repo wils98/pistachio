@@ -71,7 +71,9 @@ MINIMUM_RELIEVER_PITCHES = 2
 # Metric Constants
 # =================
 
-RUNS_PER_WIN = 10
+# PSD, 2104 season: Tango's RPW = 1.5*RPG_per_team + 3, RPG=5.16 from OOTP's own
+# league history report (tools/calibrate_league_constants.py --runs-per-team-per-game).
+RUNS_PER_WIN = 10.74
 REPLACEMENT_LEVEL_WOBA = 0.3 # no positional adjustment
 REPLACEMENT_LEVEL_PITCHER_WOBA = 0.36
 
@@ -121,12 +123,13 @@ COLUMNS_TO_BLANK_BEFORE_EXPORT = [
 # wOBA and wRC+ weights
 # ============================
 
-# Base rates for a pitcher with all 50 ratings
+# PSD league-wide average rates, 2104 season (tools/calibrate_league_constants.py),
+# not upstream's — real hr/bb/k allowed and non-HR-hit rates per batter faced.
 BASE_PITCHING_RATES = {
-    "hr_vs_baserate": 0.0326,
-    "bb_vs_baserate": 0.0714,
-    "k_vs_baserate": 0.2078,
-    "h_nothr_vs_baserate": 0.2050
+    "hr_vs_baserate": 0.0286,
+    "bb_vs_baserate": 0.0786,
+    "k_vs_baserate": 0.1715,
+    "h_nothr_vs_baserate": 0.2226
 }
 
 # Run-Value Weights for Pitching wOBA (pwOBA) calculation
@@ -136,14 +139,15 @@ PITCHING_WOBA_WEIGHTS = {
     "h_nothr_vs_wOBA_weight": 0.99
 }
 
-# Base rates for a hitter with all 50 ratings
+# PSD league-wide average rates, 2104 season (tools/calibrate_league_constants.py),
+# not upstream's — real hr/k/bb/1b/2b/3b rates per plate appearance.
 BASE_HITTING_RATES = {
-    "hr_pct_baserate": 0.0333,
-    "k_pct_baserate": 0.2089,
-    "bb_pct_baserate": 0.0706,
-    "1b_pct_baserate": 0.1564,
-    "2b_pct_baserate": 0.0450,
-    "3b_pct_baserate": 0.0048
+    "hr_pct_baserate": 0.0286,
+    "k_pct_baserate": 0.1715,
+    "bb_pct_baserate": 0.0786,
+    "1b_pct_baserate": 0.1784,
+    "2b_pct_baserate": 0.0416,
+    "3b_pct_baserate": 0.0025
 }
 
 # Run-Value Weights for hitter wOBA calculation
@@ -155,10 +159,12 @@ BATTING_WOBA_WEIGHTS = {
     "3b_pct_wOBA_weight": 1.56
 }
 
-# league context for wRC+
-LEAGUE_WOBA        = 0.320        # from all-50 hitter calibration
-WOBA_SCALE         = 1.15         # from Tango book
-LEAGUE_RUNS_PER_PA = 0.120        
+# league context for wRC+ — PSD, 2104 season (tools/calibrate_league_constants.py),
+# cross-checked two ways (pistachio's own wOBA weights vs. independent reference
+# weights): 0.3284 vs 0.3297, well within a plausible baseball range.
+LEAGUE_WOBA        = 0.3284
+WOBA_SCALE         = 1.15         # from Tango book — not league-specific, unchanged
+LEAGUE_RUNS_PER_PA = 0.1280
 
 # ===============================================
 # Pitching wOBA component adjustments by rating

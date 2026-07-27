@@ -125,7 +125,7 @@ def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
     """
     conn = _connect()
     rows = conn.execute("""
-        SELECT r.player_id, r.power_pot, r.eye_pot, r.avoid_k_pot, r.gap_pot,
+        SELECT r.player_id, r.age, r.power_pot, r.eye_pot, r.avoid_k_pot, r.gap_pot,
                r.control_pot, r.stuff_pot, r.stamina, r.speed,
                r.defense_json, r.pitches_json, r.extra_json
         FROM player_ratings_history r
@@ -141,6 +141,7 @@ def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
     for row in rows:
         record = {
             "player_id": row["player_id"],
+            "age": row["age"],
             "powP": row["power_pot"], "eyeP": row["eye_pot"],
             "avkP": row["avoid_k_pot"], "gapP": row["gap_pot"],
             "ctrlP": row["control_pot"], "stuffP": row["stuff_pot"],
@@ -163,6 +164,41 @@ def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
 
     ratings_df = pd.DataFrame(records)
     df = pd.merge(df, ratings_df, on="player_id", how="left")
+    return df
+
+
+STOPGAP_SCALED_COLUMNS = (
+    list(EXTRA_JSON_RENAMES.values())
+    + list(DEFENSE_JSON_RENAMES.values())
+    + PITCH_RATING_COLUMNS
+    + POTENTIAL_PITCH_RATING_COLUMNS
+    + ["powP", "eyeP", "avkP", "gapP", "ctrlP", "stuffP", "stamina", "speed"]
+)
+
+
+def apply_native_scale_stopgap(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    TEMPORARY STOPGAP — delete once config.py's regression tables are rebuilt
+    natively for PSD's 1-100 rating scale (see NOTES.md).
+
+    Every regression table in config.py (BATTING_COMPONENTS_ADJUST_MAP,
+    PITCHING_COMPONENTS_ADJUST_MAP, FIELDING_RUN_VALUES_VS_REPLACEMENT) plus the
+    plain thresholds outside any table (POSITION_THRESHOLDS, PITCH_MINIMUM_RATING)
+    assume 20-80 scouting-grade input. PSD's ratings are natively 1-100 (by league
+    rule-book design, not a bug). Left alone, in-range-but-off-the-5-point-grid
+    values crash metrics_pitching.py and silently no-op in metrics_hitting.py.
+
+    This rescales each affected column to its league-wide percentile, mapped onto
+    the 20-80 domain and rounded to the nearest 5, so every table lookup lands on
+    a real bucket. Preserves relative ordering (best players still rank highest)
+    but produces NO real calibration — it's upstream's coefficients applied to a
+    rescaled view of PSD's ratings, nothing more. Absolute output numbers are not
+    trustworthy until the tables themselves are rebuilt for the real 1-100 domain.
+    """
+    for col in STOPGAP_SCALED_COLUMNS:
+        pct = df[col].rank(pct=True)
+        scaled = 20 + pct * 60
+        df[col] = ((scaled / 5).round() * 5).astype("Int64")
     return df
 
 
