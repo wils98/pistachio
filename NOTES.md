@@ -221,6 +221,22 @@ NOT NULL` (per-pick, keyed by `round`/`pick_in_round`/`is_supplemental`), not fr
 table. Verified: 1254 draft-pool players total, 442 already in `draft_pick` with a
 non-null `picked_at_utc`, 812 flagged `avail` — accounts for the full pool with no overlap.
 
+**Pass 5 follow-up 2, same day** — added an on-demand "Refresh" button, only on the draft pages
+for now (`exporter.py`'s new `"refreshable"` flag on an `EXPORT_PAGES` entry, currently set only
+for `draft_h.html`/`draft_p.html`), instead of enabling `pistachio-run.timer`. `serve.py` gained a
+`POST /refresh` handler that runs `main.py` as a subprocess and blocks until it finishes (204 on
+success, 500 + stderr on failure); the button's JS calls it and reloads the page once it resolves.
+`HTTPServer` here is deliberately single-threaded, so a refresh blocks all other page loads until
+it completes — acceptable for a small Tailscale-only tool, and it also means two overlapping
+refresh clicks can't race each other (they just queue). **Verified end-to-end** against a scratch
+copy on the box: button HTML present only on the draft pages (absent from `hitters.html`), a real
+`POST /refresh` returned `204` and the output file's mtime advanced, confirming `main.py` actually
+reran. **Found while testing**: a full `main.py` run takes ~200 seconds (`.apply()`/`.iterrows()`
+over ~17,800 players) — worth knowing before assuming a short timeout means something's broken.
+Also confirmed `config.py`'s `_load_env_file()` uses `os.environ.setdefault()`, so editing `.env`
+on disk has no effect on an already-running `serve.py` process (or anything it subprocess-spawns)
+until the service itself restarts.
+
 ## Current state (as of this writing)
 
 - `pistachio-serve.service`: **running** on the box, serving real projections against live PSD

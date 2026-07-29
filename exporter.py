@@ -1,8 +1,33 @@
 from config import COLUMNS_TO_BLANK_BEFORE_EXPORT, export_filepath
 
 
+REFRESH_BUTTON_HTML = """
+  <button id="refresh-btn" onclick="pistachioRefresh()">Refresh</button>
+  <script>
+    function pistachioRefresh() {
+      var btn = document.getElementById('refresh-btn');
+      btn.disabled = true;
+      btn.textContent = 'Refreshing…';
+      fetch('/refresh', { method: 'POST' })
+        .then(function(resp) {
+          if (!resp.ok) {
+            return resp.text().then(function(text) { throw new Error(text || resp.statusText); });
+          }
+          location.reload();
+        })
+        .catch(function(err) {
+          alert('Refresh failed: ' + err.message);
+          btn.disabled = false;
+          btn.textContent = 'Refresh';
+        });
+    }
+  </script>
+"""
+
+
 def export_advanced_html(
-    df, filename, columns, title="Data Table", row_filter=None, page_len=100
+    df, filename, columns, title="Data Table", row_filter=None, page_len=100,
+    show_refresh_button=False,
 ):
     """
     Export df[columns] to an HTML file with DataTables (using the searchbuilder extension).
@@ -72,7 +97,10 @@ def export_advanced_html(
     # Ensure the table has the id DataTables expects:
     html_table = html_table.replace("<table ", '<table id="data" ', 1)
 
-    full = HTML_DARK_TEMPLATE.format(title=title, table=html_table, page_len=page_len)
+    header_controls = REFRESH_BUTTON_HTML if show_refresh_button else ""
+    full = HTML_DARK_TEMPLATE.format(
+        title=title, table=html_table, page_len=page_len, header_controls=header_controls
+    )
     export_filepath.mkdir(parents=True, exist_ok=True)
     path = export_filepath / filename
     with open(path, "w", encoding="utf-8") as f:
@@ -229,6 +257,7 @@ EXPORT_PAGES = [
         ],
         "filter": lambda df: df["draft_pool_year"].notna(),
         "page_len": 100,
+        "refreshable": True,
     },
     {
         "filename": "draft_p.html",
@@ -244,6 +273,7 @@ EXPORT_PAGES = [
         ],
         "filter": lambda df: df["draft_pool_year"].notna(),
         "page_len": 100,
+        "refreshable": True,
     },
     # More pages can be added here
 ]
@@ -262,6 +292,7 @@ def export_html_pages(df):
             title=page["title"],
             row_filter=filt,
             page_len=page.get("page_len", 100),
+            show_refresh_button=page.get("refreshable", False),
         )
 
 
@@ -355,7 +386,7 @@ HTML_DARK_TEMPLATE = """
 <body>
   <div class="header-row">
     <h2>{title}</h2>
-    <div id="header-controls"></div>
+    <div id="header-controls">{header_controls}</div>
   </div>
   {table}
 <script>
