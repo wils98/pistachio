@@ -251,3 +251,27 @@ def is_flagged(df: pd.DataFrame) -> pd.DataFrame:
     # Add 'flag' column based on player_id match
     df["flag"] = np.where(df["player_id"].isin(flagged_ids), "flag", "")
     return df
+
+
+def add_draft_availability(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Flags each draft-pool player as still available ('avail') vs already
+    selected in this year's draft. Sourced from draft_pick.picked_at_utc, not
+    player.organization_id/team_id — confirmed those stay 0 for already-picked
+    players too (this game's ingest doesn't move drafted players onto a roster
+    immediately), so draft_pick is the only reliable "has this pick happened
+    yet" signal.
+    """
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT DISTINCT player_id FROM draft_pick
+        WHERE picked_at_utc IS NOT NULL AND player_id IS NOT NULL
+    """).fetchall()
+    conn.close()
+
+    drafted_ids = {row["player_id"] for row in rows}
+    df["avail"] = np.where(
+        df["draft_pool_year"].notna() & ~df["player_id"].isin(drafted_ids),
+        "avail", ""
+    )
+    return df

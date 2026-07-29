@@ -209,6 +209,18 @@ OSA-rated) — a new export page filters to `draft_pool_year IS NOT NULL` and sh
 hit/pitch columns side by side (draftees aren't signed yet, so only `*P` columns apply; verified
 row count matches the DB's 1254 exactly).
 
+**Pass 5 follow-up, same day** — split `draft.html` into `draft_h.html`/`draft_p.html` (hitting
+vs pitching potential, mirroring `hitters.html`/`pitchers.html`'s own split rather than one mixed
+table), dropped the one non-potential column (`field`, current defense grades) that had crept
+into the first version, and added an `avail` column (same on/off-string convention as the
+existing `flag` column) marking which draft-pool players haven't been picked yet. Confirmed
+`player.organization_id`/`team_id` do **not** update when a player is actually drafted (all 442
+already-picked players in the new `draft_pick` table still show `organization_id = 0`, identical
+to the 812 not-yet-picked ones) — so availability has to come from `draft_pick.picked_at_utc IS
+NOT NULL` (per-pick, keyed by `round`/`pick_in_round`/`is_supplemental`), not from the player
+table. Verified: 1254 draft-pool players total, 442 already in `draft_pick` with a
+non-null `picked_at_utc`, 812 flagged `avail` — accounts for the full pool with no overlap.
+
 ## Current state (as of this writing)
 
 - `pistachio-serve.service`: **running** on the box, serving real projections against live PSD

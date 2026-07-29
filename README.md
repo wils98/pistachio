@@ -51,12 +51,15 @@ freshness check just assumes something is keeping them current.
 
 ## Output
 
-When run successfully, the system generates four HTML pages of projections:
+When run successfully, the system generates five HTML pages of projections:
 
 - `pitchers.html`: Pitchers and pitching prospects  
 - `hitters.html`: Hitters  
 - `hit_prospects.html`: Hitter prospects
-- `draft.html`: Draft-pool prospects (potential-only projections, hitting and pitching side by side — draft-pool players aren't yet signed to an org)
+- `draft_h.html` / `draft_p.html`: Draft-pool prospects, hitting and pitching potential
+  respectively (potential-only columns — draft-pool players aren't signed to an org yet, so
+  there's no "current" performance to project). Includes an `avail` column (like the existing
+  `flag` column) marking players not yet selected in this year's draft.
 
 ## Based on OOTP 26
 
