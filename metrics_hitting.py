@@ -12,6 +12,7 @@ from config import (
     WOBA_SCALE,
     LEAGUE_RUNS_PER_PA
 )
+from rating_lookup import interpolate_lookup
 
 def calc_hitting_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -42,14 +43,7 @@ def calc_hitting_metrics(df: pd.DataFrame) -> pd.DataFrame:
         # Loop through each component and apply adjustment
         for category, rating in ratings.items():
             table = BATTING_COMPONENTS_ADJUST_MAP[category]
-            keys = list(map(int, table.keys()))
-            min_key = min(keys)
-            max_key = max(keys)
-            if pd.isna(rating):
-                clamped = min_key
-            else:
-                clamped = max(min_key, min(int(rating), max_key))
-            adjustment = table.get(str(clamped), {})
+            adjustment = interpolate_lookup(rating, table)
 
             for key, value in adjustment.items():
                 base_key = key.replace("_adj", "")
@@ -128,14 +122,7 @@ def calc_potential_hitting_metrics(df: pd.DataFrame) -> pd.DataFrame:
         # Loop through each component and apply adjustment
         for category, rating in ratings.items():
             table = BATTING_COMPONENTS_ADJUST_MAP[category]
-            keys = list(map(int, table.keys()))
-            min_key = min(keys)
-            max_key = max(keys)
-            if pd.isna(rating):
-                clamped = min_key
-            else:
-                clamped = max(min_key, min(int(rating), max_key))
-            adjustment = table.get(str(clamped), {})
+            adjustment = interpolate_lookup(rating, table)
 
             for key, value in adjustment.items():
                 base_key = key.replace("_adj", "")

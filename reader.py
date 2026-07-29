@@ -51,7 +51,7 @@ def load_players() -> pd.DataFrame:
     conn = _connect()
     rows = conn.execute("""
         SELECT p.player_id, p.first_name, p.last_name, p.retired,
-               p.organization_id, p.team_id,
+               p.organization_id, p.team_id, p.draft_pool_year,
                COALESCE(t.nickname, 'Free') AS org
         FROM player p
         LEFT JOIN team t ON p.organization_id = t.team_id
@@ -201,20 +201,20 @@ def apply_native_scale_stopgap(df: pd.DataFrame) -> pd.DataFrame:
     PITCHING_COMPONENTS_ADJUST_MAP, FIELDING_RUN_VALUES_VS_REPLACEMENT) plus the
     plain thresholds outside any table (POSITION_THRESHOLDS, PITCH_MINIMUM_RATING)
     assume 20-80 scouting-grade input. PSD's ratings are natively 1-100 (by league
-    rule-book design, not a bug). Left alone, in-range-but-off-the-5-point-grid
-    values crash metrics_pitching.py and silently no-op in metrics_hitting.py.
+    rule-book design, not a bug).
 
     This rescales each affected column to its league-wide percentile, mapped onto
-    the 20-80 domain and rounded to the nearest 5, so every table lookup lands on
-    a real bucket. Preserves relative ordering (best players still rank highest)
-    but produces NO real calibration — it's upstream's coefficients applied to a
-    rescaled view of PSD's ratings, nothing more. Absolute output numbers are not
-    trustworthy until the tables themselves are rebuilt for the real 1-100 domain.
+    the 20-80 domain — left as a continuous value (not rounded to a bucket) since
+    the table lookups themselves now interpolate between buckets (see
+    rating_lookup.py) rather than requiring an exact key match. Preserves
+    relative ordering (best players still rank highest) but produces NO real
+    calibration — it's upstream's coefficients applied to a rescaled view of
+    PSD's ratings, nothing more. Absolute output numbers are not trustworthy
+    until the tables themselves are rebuilt for the real 1-100 domain.
     """
     for col in STOPGAP_SCALED_COLUMNS:
         pct = df[col].rank(pct=True)
-        scaled = 20 + pct * 60
-        df[col] = ((scaled / 5).round() * 5).astype("Int64")
+        df[col] = 20 + pct * 60
     return df
 
 

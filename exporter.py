@@ -205,6 +205,25 @@ EXPORT_PAGES = [
         "filter": lambda df: df["wOBAP"] > 0.200,
         "page_len": 100,
     },
+    {
+        "filename": "draft.html",
+        "title": "Draft Prospects",
+        "columns": [
+            "name",
+            "age",
+            "bestP",
+            "posP",
+            "wOBAP",
+            "wRC+P",
+            "sp_warP",
+            "rp_warP",
+            "pwOBAP",
+            "field",
+            "flag",
+        ],
+        "filter": lambda df: df["draft_pool_year"].notna(),
+        "page_len": 100,
+    },
     # More pages can be added here
 ]
 

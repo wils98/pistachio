@@ -176,10 +176,43 @@ the team-level tables (no reason to switch back — already verified correct and
 player-level tables are confirmed usable again for anything else that needs per-player
 granularity.
 
+**Pass 5 — fixed a real ceiling bug in the stopgap, added a draft-pool page:**
+
+The user spotted it live (`pitchers.html`): a large cluster of pitchers all tied at the exact
+same top `war_pitching` value. Root cause, confirmed directly against the live DB (115 pitchers
+tied at `3.9`): Workstream A's stopgap rescaled every rating to its league percentile *rounded to
+the nearest 5*, and the regression-table lookups (`metrics_pitching.py`'s `_lookup_adjustment()`,
+`metrics_hitting.py`'s two inline duplicates, `metrics_fielding.py`'s `closest_rating()`) all
+*clamped* to the table's outermost key instead of extrapolating past it. Combined effect: anyone
+in roughly the top ~4% of the league on a given rating got rounded to the table's max key (`80`
+for most categories), and since `Control`/`HRA`/`Stuff` dominate pitching wOBA, every pitcher
+elite enough in all three collapsed onto an identical adjustment — the 96th percentile and the
+literal best pitcher in the league became indistinguishable. Exactly the symptom the "not real
+calibration" caveat below was warning about, now with concrete evidence.
+
+Fix: `reader.py`'s `apply_native_scale_stopgap()` no longer rounds to nearest 5 — it leaves the
+percentile-scaled rating continuous. A new shared `rating_lookup.py` (`interpolate_lookup()`)
+replaces all three previous lookup implementations (removing the duplication between
+`metrics_pitching.py` and `metrics_hitting.py` at the same time): it linearly interpolates
+between the two nearest table keys, and *extrapolates* past either edge using the slope of the
+outermost two keys instead of clamping. NaN still maps to the table's floor key, same as before.
+**Verified**: re-ran the full pipeline against the live DB — the previous 115-way tie at the
+pitching-WAR ceiling is now a single player (`4.3`, the next distinct value down is `4.2`); 0%
+NaN on `best`/`war_pitching` unchanged; no new walls of identical values anywhere in either
+distribution, only the ordinary/expected clustering around replacement-level and floor values.
+Still **not real calibration** — same caveat as Workstream A, this only fixes how the interim
+stopgap's scaled ratings get consumed, not the underlying (still upstream) coefficients.
+
+Also added `draft.html`: `player.draft_pool_year` (not previously read by `reader.py`) marks the
+current draft-eligible class (1254 players, `organization_id`/`team_id` both `0`, all already
+OSA-rated) — a new export page filters to `draft_pool_year IS NOT NULL` and shows potential-only
+hit/pitch columns side by side (draftees aren't signed yet, so only `*P` columns apply; verified
+row count matches the DB's 1254 exactly).
+
 ## Current state (as of this writing)
 
 - `pistachio-serve.service`: **running** on the box, serving real projections against live PSD
-  data (re-exported after Pass 4's fixes) — `pa`/`ip` display columns are now correct too.
+  data (re-exported after Pass 5's fixes) — `pa`/`ip` display columns are now correct too.
 - `pistachio-run.timer`: **disabled**, unchanged from Pass 1.
 - `/data-pistachio/{input,output}` and the old `PISTACHIO_INPUT_DIR`/
   `PISTACHIO_MAX_INPUT_AGE_DAYS` env vars are now **dead weight** — no longer read by any code

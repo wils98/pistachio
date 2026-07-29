@@ -51,11 +51,12 @@ freshness check just assumes something is keeping them current.
 
 ## Output
 
-When run successfully, the system generates three HTML pages of projections:
+When run successfully, the system generates four HTML pages of projections:
 
 - `pitchers.html`: Pitchers and pitching prospects  
 - `hitters.html`: Hitters  
 - `hit_prospects.html`: Hitter prospects
+- `draft.html`: Draft-pool prospects (potential-only projections, hitting and pitching side by side — draft-pool players aren't yet signed to an org)
 
 ## Based on OOTP 26
 

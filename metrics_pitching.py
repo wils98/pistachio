@@ -12,30 +12,7 @@ from config import (
     RUNS_PER_WIN,
     RELIEVER_VS_STARTER_AVERAGE_IP
 )
-
-
-def _lookup_adjustment(value, table: dict) -> dict:
-    """
-    Looks up the wOBA-component adjustment for one rating value in one category's
-    table. A missing (NaN) rating defaults to the floor bucket — matching
-    metrics_hitting.py's pattern — rather than the amplified below-floor
-    extrapolation, which stays reserved for genuinely out-of-range low values.
-    Every category (including Stamina, previously a silent no-op on any non-exact
-    match) clamps to its nearest table edge when out of range, rather than
-    contributing nothing.
-    """
-    keys = list(map(int, table.keys()))
-    min_key, max_key = min(keys), max(keys)
-
-    if pd.isna(value):
-        return table[str(min_key)]
-    value = int(value)
-    if value < min_key:
-        min_adj = table[str(min_key)]
-        return {k: 10 * v for k, v in min_adj.items()}
-    if value > max_key:
-        return table[str(max_key)]
-    return table[str(value)]
+from rating_lookup import interpolate_lookup
 
 
 def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
@@ -69,7 +46,7 @@ def calc_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
         for category, value in ratings.items():
             table = PITCHING_COMPONENTS_ADJUST_MAP[category]
-            adj = _lookup_adjustment(value, table)
+            adj = interpolate_lookup(value, table)
             rates["hr_vs"] += adj["hr_vs_adj"]
             rates["bb_vs"] += adj["bb_vs_adj"]
             rates["k_vs"] += adj["k_vs_adj"]
@@ -153,7 +130,7 @@ def calc_potential_pitching_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
         for category, value in ratings.items():
             table = PITCHING_COMPONENTS_ADJUST_MAP[category]
-            adj = _lookup_adjustment(value, table)
+            adj = interpolate_lookup(value, table)
             rates["hr_vs"] += adj["hr_vs_adj"]
             rates["bb_vs"] += adj["bb_vs_adj"]
             rates["k_vs"] += adj["k_vs_adj"]
