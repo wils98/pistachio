@@ -6,14 +6,19 @@ data as JSON and a JS port of rating_lookup.interpolate_lookup(), structured
 to mirror the Python function 1:1 for easy side-by-side review.
 
 Mirrors the *potential*-rating calculation path specifically (single value
-per category, no handedness split — calc_potential_hitting_metrics_native/
-calc_potential_pitching_metrics_native's exact math), and shows offense-only
-WAR (no fielding/position value) and lets the user pick Starter/Reliever
-directly rather than deriving it from pitch-type ratings — both of those are
-still stopgap-based, not natively calibrated (see README.md's "deliberately
-out of scope"), so out of scope for a tool specifically about this refit's
-math. Generated, not hand-typed — reviewed before being treated as final,
-same discipline as fit_tables.py.
+per category — calc_potential_hitting_metrics_native/
+calc_potential_pitching_metrics_native's exact math), including the
+split-aware rebuild: each category has separate vsR/vsL tables (fit against
+real split-specific performance, not a fit-time blend), and the single
+potential value is run through both, then combined using the selected
+bats/throws' REAL exposure weight (HANDEDNESS_WEIGHTS_NATIVE_HITTING/
+_PITCHING) — not a flat 0.7/0.3. Shows offense-only WAR (no fielding/
+position value) and lets the user pick Starter/Reliever directly rather
+than deriving it from pitch-type ratings — both still stopgap-based, not
+natively calibrated (see README.md's "deliberately out of scope").
+
+Generated, not hand-typed — reviewed before being treated as final, same
+discipline as fit_tables.py.
 
 Usage:
     python calibration/build_calculator.py
@@ -36,6 +41,8 @@ from config import (
 from tables_native import (
     BATTING_COMPONENTS_ADJUST_MAP_NATIVE,
     PITCHING_COMPONENTS_ADJUST_MAP_NATIVE,
+    HANDEDNESS_WEIGHTS_NATIVE_HITTING,
+    HANDEDNESS_WEIGHTS_NATIVE_PITCHING,
     RUNS_PER_GAME_HITTING_COEFF_NATIVE,
     RUNS_PER_GAME_HITTING_CONST_NATIVE,
     RUNS_PER_GAME_PITCHING_COEFF_NATIVE,
@@ -47,9 +54,14 @@ HITTING_OUTCOMES = ["hr_pct", "k_pct", "bb_pct", "1b_pct", "2b_pct", "3b_pct"]
 PITCHING_CATEGORIES = ["Control", "pBABIP", "HRA", "Stuff", "Stamina"]
 PITCHING_OUTCOMES = ["hr_vs", "bb_vs", "k_vs", "h_nothr_vs"]
 
+HITTING_HAND_LABEL = "Bats"
+PITCHING_HAND_LABEL = "Throws"
+HITTING_HAND_OPTIONS = [("L", "Left"), ("R", "Right"), ("S", "Switch")]
+PITCHING_HAND_OPTIONS = [("L", "Left"), ("R", "Right")]
 
-def _category_range(table: dict) -> tuple[float, float]:
-    keys = [float(k) for k in table.keys()]
+
+def _category_range(table_by_side: dict) -> tuple[float, float]:
+    keys = [float(k) for side in table_by_side.values() for k in side.keys()]
     return min(keys), max(keys)
 
 
@@ -80,6 +92,10 @@ def build_data() -> dict:
             "runsCoeff": RUNS_PER_GAME_HITTING_COEFF_NATIVE,
             "runsConst": RUNS_PER_GAME_HITTING_CONST_NATIVE,
             "ranges": hitting_ranges,
+            "handednessWeights": HANDEDNESS_WEIGHTS_NATIVE_HITTING,
+            "handLabel": HITTING_HAND_LABEL,
+            "handOptions": HITTING_HAND_OPTIONS,
+            "defaultHand": "R",
         },
         "pitching": {
             "categories": PITCHING_CATEGORIES,
@@ -99,6 +115,10 @@ def build_data() -> dict:
             "runsCoeff": RUNS_PER_GAME_PITCHING_COEFF_NATIVE,
             "runsConst": RUNS_PER_GAME_PITCHING_CONST_NATIVE,
             "ranges": pitching_ranges,
+            "handednessWeights": HANDEDNESS_WEIGHTS_NATIVE_PITCHING,
+            "handLabel": PITCHING_HAND_LABEL,
+            "handOptions": PITCHING_HAND_OPTIONS,
+            "defaultHand": "R",
         },
         "runsPerWin": RUNS_PER_WIN,
         "relieverIpShare": RELIEVER_VS_STARTER_AVERAGE_IP,
@@ -165,13 +185,13 @@ body {{
   margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-ui);
   font-size: 15px; line-height: 1.5;
 }}
-.wrap {{ max-width: 1180px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }}
+.wrap {{ max-width: 1280px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }}
 header {{ margin-bottom: 1.75rem; }}
 h1 {{
   font-size: 1.5rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em;
   margin: 0 0 0.35rem; text-wrap: balance;
 }}
-header p {{ color: var(--text-dim); margin: 0; max-width: 62ch; }}
+header p {{ color: var(--text-dim); margin: 0; max-width: 68ch; }}
 .tabs {{ display: flex; gap: 0.5rem; margin: 1.5rem 0 1.25rem; }}
 .tab {{
   font-family: var(--font-ui); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
@@ -181,15 +201,16 @@ header p {{ color: var(--text-dim); margin: 0; max-width: 62ch; }}
 .tab[aria-selected="true"] {{ background: var(--accent); color: var(--bg); border-color: var(--accent); }}
 .tab:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
 .grid {{ display: grid; grid-template-columns: minmax(260px, 320px) 1fr; gap: 1.5rem; align-items: start; }}
-@media (max-width: 860px) {{ .grid {{ grid-template-columns: 1fr; }} }}
+@media (max-width: 900px) {{ .grid {{ grid-template-columns: 1fr; }} }}
 .card {{
   background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem;
 }}
 .card + .card {{ margin-top: 1rem; }}
 .card h2 {{
   font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--text-dim); margin: 0 0 1rem;
+  color: var(--text-dim); margin: 0 0 1rem; display: flex; justify-content: space-between; align-items: baseline;
 }}
+.card h2 .hint {{ font-weight: 500; text-transform: none; letter-spacing: 0; font-size: 0.72rem; color: var(--text-dim); }}
 .field {{ display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1rem; }}
 .field:last-child {{ margin-bottom: 0; }}
 .field-label {{ display: flex; justify-content: space-between; align-items: baseline; font-size: 0.85rem; }}
@@ -198,38 +219,39 @@ header p {{ color: var(--text-dim); margin: 0; max-width: 62ch; }}
 input[type="range"] {{
   width: 100%; accent-color: var(--accent); height: 1.4rem; background: transparent; cursor: pointer;
 }}
-input[type="number"] {{
-  font-family: var(--font-mono); font-variant-numeric: tabular-nums; width: 4.5rem; background: var(--surface-2);
-  border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 0.2rem 0.4rem; font-size: 0.85rem;
-}}
 .extrap-flag {{
   font-size: 0.7rem; color: var(--negative); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
   visibility: hidden;
 }}
 .extrap-flag.on {{ visibility: visible; }}
-.role-toggle {{ display: flex; gap: 0.5rem; }}
-.role-toggle button {{
+.toggle-row {{ display: flex; gap: 0.5rem; }}
+.toggle-row button {{
   flex: 1; font-family: var(--font-ui); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
-  font-size: 0.8rem; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border);
+  font-size: 0.78rem; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border);
   background: var(--surface-2); color: var(--text-dim); cursor: pointer;
 }}
-.role-toggle button[aria-pressed="true"] {{ background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }}
+.toggle-row button[aria-pressed="true"] {{ background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }}
+.exposure-note {{
+  font-size: 0.78rem; color: var(--text-dim); background: var(--surface-2); border-radius: 6px;
+  padding: 0.55rem 0.7rem; margin-top: 0.6rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+}}
+.exposure-note b {{ color: var(--text); font-family: var(--font-ui); }}
 .table-scroll {{ overflow-x: auto; }}
-table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+table {{ width: 100%; border-collapse: collapse; font-size: 0.83rem; }}
 th, td {{
-  padding: 0.45rem 0.6rem; text-align: right; border-bottom: 1px solid var(--border);
+  padding: 0.4rem 0.55rem; text-align: right; border-bottom: 1px solid var(--border);
   font-variant-numeric: tabular-nums; font-family: var(--font-mono); white-space: nowrap;
 }}
 th:first-child, td:first-child {{ text-align: left; font-family: var(--font-ui); }}
 thead th {{
-  font-family: var(--font-ui); font-weight: 700; text-transform: uppercase; font-size: 0.68rem;
+  font-family: var(--font-ui); font-weight: 700; text-transform: uppercase; font-size: 0.66rem;
   letter-spacing: 0.05em; color: var(--text-dim); border-bottom: 1px solid var(--border);
 }}
 tr.total-row td {{ font-weight: 800; border-top: 2px solid var(--border); border-bottom: none; color: var(--text); }}
 tr.base-row td {{ color: var(--text-dim); }}
+tr.side-r td:first-child, tr.side-l td:first-child {{ padding-left: 1.3rem; color: var(--text-dim); font-style: italic; }}
 td.pos {{ color: var(--positive); }}
 td.neg {{ color: var(--negative); }}
-.extrap-cell {{ color: var(--negative); }}
 .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; margin-top: 1rem; }}
 .stat {{ background: var(--surface-2); border-radius: 8px; padding: 0.85rem 1rem; }}
 .stat .label {{ font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); font-weight: 700; }}
@@ -245,12 +267,12 @@ footer a {{ color: var(--accent); }}
 <body>
 <div class="wrap">
   <header>
-    <h1>Ratings &rarr; wOBA / WAR</h1>
+    <h1>Ratings → wOBA / WAR</h1>
     <p>Move a rating and watch the calculation rebuild itself, step by step &mdash; the same math
     <code>calibration/metrics_hitting_native.py</code> / <code>metrics_pitching_native.py</code> run,
-    fit to real PSD league data. Offense/pitching value only (no fielding, no role-eligibility
-    thresholds &mdash; those parts of the model are still on the old scale, see the project's
-    calibration/README.md).</p>
+    fit separately against real vs-RHP/vs-LHP performance and blended by real exposure weights
+    (not a flat 70/30). Offense/pitching value only &mdash; no fielding, no role-eligibility
+    thresholds (still on the old scale; see calibration/README.md).</p>
   </header>
 
   <div class="tabs" role="tablist">
@@ -263,10 +285,15 @@ footer a {{ color: var(--accent); }}
       <div class="card">
         <h2>Ratings</h2>
         <div id="hitting-inputs"></div>
+        <div class="field">
+          <div class="field-label"><span id="hitting-hand-label"></span></div>
+          <div class="toggle-row" id="hitting-hand-toggle"></div>
+          <div class="exposure-note" id="hitting-exposure"></div>
+        </div>
       </div>
       <div>
         <div class="card">
-          <h2>Rate build-up</h2>
+          <h2>Rate build-up <span class="hint">vs RHP, vs LHP, then real-exposure blend</span></h2>
           <div class="table-scroll"><table id="hitting-breakdown"></table></div>
         </div>
         <div class="card">
@@ -284,8 +311,13 @@ footer a {{ color: var(--accent); }}
         <h2>Ratings</h2>
         <div id="pitching-inputs"></div>
         <div class="field">
+          <div class="field-label"><span id="pitching-hand-label"></span></div>
+          <div class="toggle-row" id="pitching-hand-toggle"></div>
+          <div class="exposure-note" id="pitching-exposure"></div>
+        </div>
+        <div class="field">
           <div class="field-label"><span>Role</span></div>
-          <div class="role-toggle">
+          <div class="toggle-row">
             <button id="role-sp" aria-pressed="true">Starter</button>
             <button id="role-rp" aria-pressed="false">Reliever</button>
           </div>
@@ -293,7 +325,7 @@ footer a {{ color: var(--accent); }}
       </div>
       <div>
         <div class="card">
-          <h2>Rate build-up</h2>
+          <h2>Rate build-up <span class="hint">vs RHB, vs LHB, then real-exposure blend</span></h2>
           <div class="table-scroll"><table id="pitching-breakdown"></table></div>
         </div>
         <div class="card">
@@ -308,9 +340,11 @@ footer a {{ color: var(--accent); }}
   <footer>
     Generated by <code>calibration/build_calculator.py</code> from
     <code>calibration/tables_native.py</code> &mdash; a reviewed literal export, not recomputed
-    at runtime. Red-flagged categories are extrapolating past the table's fitted range (see
-    <code>rating_lookup.py</code>'s edge-slope extrapolation) &mdash; still well-behaved by
-    design, but the least-anchored part of the model.
+    at runtime. Each category is fit separately against real vs-R/vs-L performance (not a
+    shared table), so its two rows below can genuinely disagree, not just scale together.
+    Red-flagged categories are extrapolating past that side's fitted range &mdash; still
+    well-behaved by design (see <code>rating_lookup.py</code>), but the least-anchored part
+    of the model.
   </footer>
 </div>
 
@@ -346,6 +380,8 @@ function interpolateLookup(value, table) {{
 function fmt(n, d) {{ return (n < 0 ? "" : "+") + n.toFixed(d === undefined ? 4 : d); }}
 function fmtPlain(n, d) {{ return n.toFixed(d === undefined ? 4 : d); }}
 
+const state = {{ hitting: {{ hand: "R" }}, pitching: {{ hand: "R" }} }};
+
 function buildInputs(container, side) {{
   const cfg = DATA[side];
   container.innerHTML = "";
@@ -369,10 +405,28 @@ function buildInputs(container, side) {{
   }});
 }}
 
+function buildHandToggle(side, onChange) {{
+  const cfg = DATA[side];
+  document.getElementById(`${{side}}-hand-label`).textContent = cfg.handLabel;
+  const container = document.getElementById(`${{side}}-hand-toggle`);
+  container.innerHTML = "";
+  cfg.handOptions.forEach(([code, label]) => {{
+    const btn = document.createElement("button");
+    btn.textContent = label;
+    btn.setAttribute("aria-pressed", code === state[side].hand ? "true" : "false");
+    btn.addEventListener("click", () => {{
+      state[side].hand = code;
+      [...container.children].forEach(b => b.setAttribute("aria-pressed", "false"));
+      btn.setAttribute("aria-pressed", "true");
+      onChange();
+    }});
+    container.appendChild(btn);
+  }});
+}}
+
 function wireInputs(side, onChange) {{
   DATA[side].categories.forEach(cat => {{
-    const slider = document.querySelector(`[data-slider="${{side}}-${{cat}}"]`);
-    slider.addEventListener("input", onChange);
+    document.querySelector(`[data-slider="${{side}}-${{cat}}"]`).addEventListener("input", onChange);
   }});
 }}
 
@@ -395,16 +449,28 @@ function updateFlags(side, values) {{
   }});
 }}
 
-function computeSide(side, values) {{
+function computeForPitcherSide(side, values, pitcherSide) {{
   const cfg = DATA[side];
   const rates = Object.assign({{}}, cfg.baseRates);
   const perCategory = {{}};
-
   cfg.categories.forEach(cat => {{
-    const adj = interpolateLookup(values[cat], cfg.table[cat]);
+    const adj = interpolateLookup(values[cat], cfg.table[cat][pitcherSide]);
     perCategory[cat] = adj;
     cfg.outcomes.forEach(o => {{ rates[o] += adj[`${{o}}_adj`]; }});
   }});
+  return {{ rates, perCategory }};
+}}
+
+function computeSide(side, values) {{
+  const cfg = DATA[side];
+  const hand = state[side].hand;
+  const weights = cfg.handednessWeights[hand] || cfg.handednessWeights[cfg.defaultHand];
+
+  const r = computeForPitcherSide(side, values, "R");
+  const l = computeForPitcherSide(side, values, "L");
+
+  const rates = {{}};
+  cfg.outcomes.forEach(o => {{ rates[o] = r.rates[o] * weights.R + l.rates[o] * weights.L; }});
 
   let woba = 0;
   const wobaTerms = {{}};
@@ -417,7 +483,7 @@ function computeSide(side, values) {{
   const runsPer162 = woba * cfg.runsCoeff - cfg.runsConst;
   const war = runsPer162 / DATA.runsPerWin;
 
-  return {{ perCategory, rates, woba, wobaTerms, runsPer162, war }};
+  return {{ r, l, weights, rates, woba, wobaTerms, runsPer162, war }};
 }}
 
 function renderBreakdown(tableEl, side, result) {{
@@ -431,13 +497,20 @@ function renderBreakdown(tableEl, side, result) {{
   html += "</tr>";
 
   cfg.categories.forEach(cat => {{
-    const adj = result.perCategory[cat];
-    html += `<tr><td>${{CATEGORY_LABELS[cat]}}</td>`;
+    html += `<tr><td>${{CATEGORY_LABELS[cat]}} (blended)</td>`;
     cfg.outcomes.forEach(o => {{
-      const v = adj[`${{o}}_adj`];
+      const vR = result.r.perCategory[cat][`${{o}}_adj`];
+      const vL = result.l.perCategory[cat][`${{o}}_adj`];
+      const v = vR * result.weights.R + vL * result.weights.L;
       const cls = v > 0 ? "pos" : (v < 0 ? "neg" : "");
       html += `<td class="${{cls}}">${{fmt(v)}}</td>`;
     }});
+    html += "</tr>";
+    html += `<tr class="side-r"><td>vs R (${{(result.weights.R * 100).toFixed(0)}}%)</td>`;
+    cfg.outcomes.forEach(o => {{ html += `<td>${{fmt(result.r.perCategory[cat][`${{o}}_adj`])}}</td>`; }});
+    html += "</tr>";
+    html += `<tr class="side-l"><td>vs L (${{(result.weights.L * 100).toFixed(0)}}%)</td>`;
+    cfg.outcomes.forEach(o => {{ html += `<td>${{fmt(result.l.perCategory[cat][`${{o}}_adj`])}}</td>`; }});
     html += "</tr>";
   }});
 
@@ -477,12 +550,22 @@ function renderWoba(tableEl, summaryEl, side, result) {{
   summaryEl.after(step);
 }}
 
+function renderExposure(side, result) {{
+  const cfg = DATA[side];
+  const noun = side === "hitting" ? "PA" : "batters faced";
+  const opp = side === "hitting" ? ["RHP", "LHP"] : ["RHB", "LHB"];
+  document.getElementById(`${{side}}-exposure`).innerHTML =
+    `Real ${{cfg.handLabel.toLowerCase()}} ${{state[side].hand}} exposure: <b>${{(result.weights.R * 100).toFixed(1)}}%</b> ${{noun}} vs ${{opp[0]}}, ` +
+    `<b>${{(result.weights.L * 100).toFixed(1)}}%</b> vs ${{opp[1]}} (calibration/extract_pairs.py, real 2101-2103 stats).`;
+}}
+
 function refreshHitting() {{
   const values = readInputs("hitting");
   updateFlags("hitting", values);
   const result = computeSide("hitting", values);
   renderBreakdown(document.getElementById("hitting-breakdown"), "hitting", result);
   renderWoba(document.getElementById("hitting-woba"), document.getElementById("hitting-summary"), "hitting", result);
+  renderExposure("hitting", result);
 }}
 
 function refreshPitching() {{
@@ -491,12 +574,15 @@ function refreshPitching() {{
   const result = computeSide("pitching", values);
   renderBreakdown(document.getElementById("pitching-breakdown"), "pitching", result);
   renderWoba(document.getElementById("pitching-woba"), document.getElementById("pitching-summary"), "pitching", result);
+  renderExposure("pitching", result);
 }}
 
 buildInputs(document.getElementById("hitting-inputs"), "hitting");
 buildInputs(document.getElementById("pitching-inputs"), "pitching");
 wireInputs("hitting", refreshHitting);
 wireInputs("pitching", refreshPitching);
+buildHandToggle("hitting", refreshHitting);
+buildHandToggle("pitching", refreshPitching);
 
 window.__pitchRole = "sp";
 document.getElementById("role-sp").addEventListener("click", () => {{

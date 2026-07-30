@@ -1,10 +1,16 @@
 """
 Mirrors metrics_pitching.py's formula shape but sources the per-category
-regression tables and RUNS_PER_GAME_PITCHING_* constants from
-tables_native.py (genuinely fit to real PSD data — see
-calibration/README.md) instead of config.py's still-upstream values.
-BASE_PITCHING_RATES, PITCHING_WOBA_WEIGHTS, HANDEDNESS_WEIGHTS,
-RUNS_PER_WIN, RELIEVER_VS_STARTER_AVERAGE_IP are unchanged.
+regression tables from tables_native.py (genuinely fit to real PSD data —
+see calibration/README.md), fit SEPARATELY per side against real
+split-specific performance rather than a fit-time blended composite, and
+blends pwOBAR/pwOBAL using each pitcher's own real throws-conditional
+exposure weight (HANDEDNESS_WEIGHTS_NATIVE_PITCHING — which batter-handedness
+mix a pitcher actually faces) instead of config.py's flat, never-refit
+HANDEDNESS_WEIGHTS={"R":0.7,"L":0.3} applied identically to every pitcher —
+verified this was hiding a real, large effect (a lefty pitcher faces RHB
+~79.6% of the time vs. a righty pitcher's ~57.1%, since opposing managers
+stack right-handed batters against LHP specifically). BASE_PITCHING_RATES,
+PITCHING_WOBA_WEIGHTS, RUNS_PER_WIN, RELIEVER_VS_STARTER_AVERAGE_IP unchanged.
 
 One deliberate deviation from metrics_pitching.py's shape: role
 classification (sp/rp, "sprp"/"sprpP") is NOT computed here. It depends on
@@ -23,16 +29,20 @@ import pandas as pd
 from config import (
     BASE_PITCHING_RATES,
     PITCHING_WOBA_WEIGHTS,
-    HANDEDNESS_WEIGHTS,
     RUNS_PER_WIN,
     RELIEVER_VS_STARTER_AVERAGE_IP,
 )
 from rating_lookup import interpolate_lookup
 from tables_native import (
     PITCHING_COMPONENTS_ADJUST_MAP_NATIVE,
+    HANDEDNESS_WEIGHTS_NATIVE_PITCHING,
     RUNS_PER_GAME_PITCHING_COEFF_NATIVE,
     RUNS_PER_GAME_PITCHING_CONST_NATIVE,
 )
+
+# Fallback for a pitcher with missing/unrecognized throws data (rare) — the
+# league-wide "R" throws profile (the majority cohort).
+_DEFAULT_HANDEDNESS_WEIGHTS = HANDEDNESS_WEIGHTS_NATIVE_PITCHING["R"]
 
 
 def _runs_per_162(pwoba: pd.Series) -> pd.Series:
@@ -57,7 +67,7 @@ def calc_pitching_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
         }
 
         for category, value in ratings.items():
-            table = PITCHING_COMPONENTS_ADJUST_MAP_NATIVE[category]
+            table = PITCHING_COMPONENTS_ADJUST_MAP_NATIVE[category][side]
             adj = interpolate_lookup(value, table)
             rates["hr_vs"] += adj["hr_vs_adj"]
             rates["bb_vs"] += adj["bb_vs_adj"]
@@ -89,9 +99,10 @@ def calc_pitching_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
         PITCHING_WOBA_WEIGHTS["h_nothr_vs_wOBA_weight"] * df["h_nothr_vsL"]
     ).where(valid_pitcher)
 
+    weights = df["throws"].apply(lambda t: HANDEDNESS_WEIGHTS_NATIVE_PITCHING.get(t, _DEFAULT_HANDEDNESS_WEIGHTS))
     df["pwOBA"] = (
-        df["pwOBAR"] * HANDEDNESS_WEIGHTS["R"] +
-        df["pwOBAL"] * HANDEDNESS_WEIGHTS["L"]
+        df["pwOBAR"] * weights.apply(lambda w: w["R"]) +
+        df["pwOBAL"] * weights.apply(lambda w: w["L"])
     ).where(valid_pitcher)
 
     df["war_pitching"] = -_runs_per_162(df["pwOBA"]) / RUNS_PER_WIN
@@ -108,8 +119,14 @@ def calc_pitching_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def calc_potential_pitching_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
-    """Expects df["sprpP"] to already exist (see module docstring)."""
-    def adjust_rates(row):
+    """
+    Expects df["sprpP"] to already exist (see module docstring). Potential
+    ratings have no L/R split — the same potential value is run through
+    both the R-side and L-side tables and blended by the pitcher's own
+    throws-conditional weight, mirroring calc_pitching_metrics_native's R/L
+    blend exactly, just with one shared input value instead of two.
+    """
+    def adjust_rates(row, side):
         rates = {
             "hr_vs": BASE_PITCHING_RATES["hr_vs_baserate"],
             "bb_vs": BASE_PITCHING_RATES["bb_vs_baserate"],
@@ -125,7 +142,7 @@ def calc_potential_pitching_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
         }
 
         for category, value in ratings.items():
-            table = PITCHING_COMPONENTS_ADJUST_MAP_NATIVE[category]
+            table = PITCHING_COMPONENTS_ADJUST_MAP_NATIVE[category][side]
             adj = interpolate_lookup(value, table)
             rates["hr_vs"] += adj["hr_vs_adj"]
             rates["bb_vs"] += adj["bb_vs_adj"]
@@ -134,7 +151,12 @@ def calc_potential_pitching_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
 
         return pd.Series(rates)
 
-    rates = df.apply(adjust_rates, axis=1)
+    rates_r = df.apply(lambda row: adjust_rates(row, "R"), axis=1)
+    rates_l = df.apply(lambda row: adjust_rates(row, "L"), axis=1)
+    weights = df["throws"].apply(lambda t: HANDEDNESS_WEIGHTS_NATIVE_PITCHING.get(t, _DEFAULT_HANDEDNESS_WEIGHTS))
+    w_r = weights.apply(lambda w: w["R"])
+    w_l = weights.apply(lambda w: w["L"])
+    rates = rates_r.multiply(w_r, axis=0) + rates_l.multiply(w_l, axis=0)
     df = pd.concat([df, rates], axis=1)
 
     valid_pitcher = df["sprpP"].isin(["sp", "rp"])

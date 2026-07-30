@@ -266,6 +266,43 @@ Two things, one urgent and one the long-planned item 4/5 work:
   `hitters_native.html`/`pitchers_native.html` via `calibration/main_native.py`. Fielding +
   role/eligibility thresholds deliberately still stopgap-based (no fielding-outcome data yet).
   Cutover into `config.py` (and stopgap deletion) is a separate later decision.
+- Also added `calibration/build_calculator.py` → `calculator.html`: a self-contained, offline
+  interactive tool (no backend — embeds `tables_native.py` as JSON plus a JS port of
+  `rating_lookup.interpolate_lookup()`) for exploring the *potential*-rating calculation
+  step by step. Hosted alongside the other pages at `:8100/calculator.html` (one-time copy into
+  `PISTACHIO_OUTPUT_DIR`, not wired into the refresh cycle — it's static, not per-player data).
+  Also published as a Claude Artifact for access without the box.
+
+**Pass 7 (2026-07-30, same day) — Workstream B rebuilt split-aware; real exposure weights
+replace a flat, unquestioned upstream constant:**
+
+User correction, caught real: I'd claimed the real outcome data wasn't split by opposing
+handedness — wrong. `player_batting_stats_history`/`player_pitching_stats_history.split_id`
+(1=overall, 2=vsL, 3=vsR) has always had genuine split-specific performance; Pass 6's
+`extract_pairs.py` never filtered on it at all (pulled every split and summed — happened to be
+rate-neutral for hitting since overall = vsL+vsR exactly, verified directly, but still wrong
+code, and meant real split data sat unused). Rebuilt properly:
+
+- `extract_pairs.py`: separate `vsR`/`vsL` pairs, each real split outcome paired with the
+  *matching side's* rating (not a fit-time blend) — with a `PA`/`BF ≥ 30` per-split floor.
+- `fit_tables.py`: fits genuinely separate tables per side per category (not one shared table)
+  — `tables_native.py`'s shape gained a side dimension (`category → side → bucket → adj`).
+  Fit quality improved materially (hitting-vs-RHP R² 0.44–0.68, up from the blended version's
+  0.19–0.42).
+- **`HANDEDNESS_WEIGHTS={"R":0.7,"L":0.3}` in `config.py` was never PSD-calibrated at all** —
+  a flat upstream constant applied identically to every player regardless of their own
+  bats/throws. Computed the real, bats/throws-conditional numbers directly
+  (`compute_exposure_weights()`): a lefty batter faces RHP ~83.7% of the time vs. a righty
+  batter's ~72.7%; a lefty pitcher faces RHB ~79.6% vs. a righty pitcher's ~57.1% — real
+  platooning (opposing managers stack the platoon-advantaged batter side against LHP
+  specifically), not noise. `reader.py`'s `add_scouted_ratings()` gained `bats`/`throws`
+  (small, additive) so `metrics_*_native.py` can look up the right weight per player.
+- **Verified as a genuine improvement, not just a different number**: real-2103-outcome
+  Spearman rose from 0.563/0.364 (hitting/pitching, Pass 6's blended version) to **0.635/0.432**
+  — measured honestly this time (recombining real R+L splits into a real aggregate wOBA before
+  comparing, since the pairs CSV itself is now split-structured). `calculator.html` rebuilt to
+  match (bats/throws selector, shows the vsR/vsL breakdown feeding the blend) and re-verified
+  for exact numeric parity against the real Python functions.
 
 ## Current state (as of this writing)
 

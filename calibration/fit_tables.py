@@ -1,25 +1,37 @@
 """
-Workstream B fitting: joint multivariate OLS per outcome column (see
-calibration/README.md for the full methodology reasoning — one joint fit per
-outcome across all rating categories simultaneously, not independent
-per-bucket-per-category sample means; linear, not polynomial/spline, chosen
-specifically for how rating_lookup.py's interpolate_lookup() extrapolates
-past table edges using the outermost two keys' slope).
+Workstream B fitting: joint multivariate OLS per outcome column, fit
+SEPARATELY per side (real vsR performance regressed on vsR-side ratings;
+real vsL performance regressed on vsL-side ratings) — not a single table fit
+against a fit-time blended composite. See calibration/README.md and
+extract_pairs.py's module docstring for why: real per-split performance
+data exists (player_batting_stats_history.split_id) and pairing it with the
+matching side's rating captures whether a rating's relationship to outcomes
+genuinely differs by handedness, which a shared table applied to both sides
+cannot.
 
-For each category, the fitted table is built as:
-    table[cat][v] = coef_cat * (v - mean_cat)
-evaluated at bucket points spanning that category's own ~1st-99th percentile
-observed range (rounded to a clean step) — zero at each category's own
-sample mean (not a shared "50"), which reconciles with the already-real
-BASE_HITTING_RATES/BASE_PITCHING_RATES via the OLS property that the fitted
-value at the training means equals the training outcome mean.
+Linear, not polynomial/spline — chosen specifically for how
+rating_lookup.interpolate_lookup() extrapolates past table edges (using the
+outermost two keys' slope): a table built by sampling a straight line has
+constant slope everywhere, so extrapolation exactly reproduces the fit.
 
-Prints, per category per outcome: coefficient/std-err/p-value, a VIF
-(multicollinearity) check, a reconciliation check against config.py's
-existing base rates, leave-one-season-out cross-validation, and an
-extrapolation sanity check at synthetic extreme rating profiles — all meant
-to be reviewed by a human before anything gets hand-transcribed into
-tables_native.py. Nothing here writes to tables_native.py automatically.
+For each category, the fitted table is:
+    table[cat][side][v] = coef_cat_side * (v - mean_cat_side)
+zero at that side's own sample mean (not "50" — PSD's ratings aren't
+centered there), reconciling with BASE_HITTING_RATES/BASE_PITCHING_RATES via
+the OLS property that the fitted value at the training mean equals the
+training outcome mean.
+
+Also computes real bats/throws-conditional exposure weights
+(extract_pairs.compute_exposure_weights) and writes them into
+tables_native.py as HANDEDNESS_WEIGHTS_NATIVE_HITTING/_PITCHING — replacing
+config.py's flat, never-refit HANDEDNESS_WEIGHTS={"R":0.7,"L":0.3}.
+
+Prints, per side per category per outcome: coefficient/std-err/p-value, a
+VIF check, a reconciliation check, leave-one-season-out CV, and an
+extrapolation sanity check — all meant to be reviewed before
+tables_native.py is treated as final. fit_tables.py generates that file
+(not hand-typed) but nothing downstream imports fit_tables.py itself or
+recomputes at runtime.
 
 Usage (needs calibration/data/{hitting,pitching}_pairs.csv already built by
 extract_pairs.py):
@@ -37,27 +49,31 @@ import statsmodels.api as sm
 from scipy.stats import pearsonr, spearmanr
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
-from config import BASE_HITTING_RATES, BASE_PITCHING_RATES
+from config import BASE_HITTING_RATES, BASE_PITCHING_RATES, DB_PATH
+from extract_pairs import compute_exposure_weights, connect as db_connect
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 BUCKET_STEP = 5
+SIDES = ["R", "L"]
 
-HITTING_CATEGORIES = ["babip_c", "avk_c", "gap_c", "pow_c", "eye_c", "speed"]
+HITTING_CATEGORIES = ["babip_side", "avk_side", "gap_side", "pow_side", "eye_side", "speed"]
 HITTING_OUTCOMES = ["hr_pct", "k_pct", "bb_pct", "1b_pct", "2b_pct", "3b_pct"]
 HITTING_BASE_RATE_KEYS = {
     "hr_pct": "hr_pct_baserate", "k_pct": "k_pct_baserate", "bb_pct": "bb_pct_baserate",
     "1b_pct": "1b_pct_baserate", "2b_pct": "2b_pct_baserate", "3b_pct": "3b_pct_baserate",
 }
 
-PITCHING_CATEGORIES = ["Control_c", "pBABIP_c", "HRA_c", "Stuff_c", "stamina"]
+PITCHING_CATEGORIES = ["Control_side", "pBABIP_side", "HRA_side", "Stuff_side", "stamina"]
 PITCHING_OUTCOMES = ["hr_vs", "bb_vs", "k_vs", "h_nothr_vs"]
 PITCHING_BASE_RATE_KEYS = {
     "hr_vs": "hr_vs_baserate", "bb_vs": "bb_vs_baserate",
     "k_vs": "k_vs_baserate", "h_nothr_vs": "h_nothr_vs_baserate",
 }
 
+CATEGORY_KEY_OVERRIDES = {"stamina": "Stamina"}
 
-def fit_outcome(df: pd.DataFrame, categories: list[str], outcome: str) -> sm.regression.linear_model.RegressionResultsWrapper:
+
+def fit_outcome(df: pd.DataFrame, categories: list[str], outcome: str):
     x = sm.add_constant(df[categories])
     y = df[outcome]
     return sm.OLS(y, x).fit()
@@ -67,24 +83,18 @@ def print_vif(df: pd.DataFrame, categories: list[str]):
     x = sm.add_constant(df[categories])
     print("VIF (multicollinearity — values well above ~5-10 flag a concern):")
     for i, col in enumerate(categories):
-        vif = variance_inflation_factor(x.values, i + 1)  # +1 skips the const column
+        vif = variance_inflation_factor(x.values, i + 1)
         print(f"  {col}: {vif:.2f}")
 
 
-def reconciliation_check(df: pd.DataFrame, categories: list[str], outcome: str,
-                          model, base_rate: float):
-    predicted_at_means = model.params["const"] + sum(
-        model.params[cat] * df[cat].mean() for cat in categories
-    )
+def reconciliation_check(df: pd.DataFrame, categories: list[str], outcome: str, model, base_rate: float):
+    predicted_at_means = model.params["const"] + sum(model.params[cat] * df[cat].mean() for cat in categories)
     actual_mean = df[outcome].mean()
     print(f"  reconciliation: predicted-at-means={predicted_at_means:.4f}, "
-          f"actual sample mean={actual_mean:.4f}, "
-          f"config.py base rate={base_rate:.4f}")
+          f"actual sample mean={actual_mean:.4f}, config.py base rate={base_rate:.4f}")
 
 
 def build_table(model, categories: list[str], df: pd.DataFrame) -> dict:
-    """table[cat] = {bucket_str: {adj_key: coef*(bucket-mean)}}, spanning each
-    category's own ~1st-99th percentile range at BUCKET_STEP increments."""
     table = {}
     for cat in categories:
         coef = model.params[cat]
@@ -114,13 +124,11 @@ def leave_one_season_out(df: pd.DataFrame, categories: list[str], outcomes: list
             pear = pearsonr(pred, actual)[0]
             spear = spearmanr(pred, actual)[0]
             rmse = np.sqrt(((pred - actual) ** 2).mean())
-            print(f"  held out {held_out}, {outcome}: Pearson={pear:.3f} "
-                  f"Spearman={spear:.3f} RMSE={rmse:.4f} (n={len(test)})")
+            print(f"  held out {held_out}, {outcome}: Pearson={pear:.3f} Spearman={spear:.3f} RMSE={rmse:.4f} (n={len(test)})")
     print()
 
 
-def extrapolation_sanity(df: pd.DataFrame, categories: list[str], outcomes: list[str],
-                          models: dict, label: str):
+def extrapolation_sanity(df: pd.DataFrame, categories: list[str], outcomes: list[str], models: dict, label: str):
     print(f"=== {label}: extrapolation sanity (synthetic extreme profiles) ===")
     p01 = {cat: df[cat].quantile(0.01) for cat in categories}
     p99 = {cat: df[cat].quantile(0.99) for cat in categories}
@@ -139,97 +147,134 @@ def extrapolation_sanity(df: pd.DataFrame, categories: list[str], outcomes: list
     print()
 
 
-def run_side(pairs_csv: str, categories: list[str], outcomes: list[str],
-             base_rate_keys: dict, base_rates: dict, adj_suffix: str, label: str):
-    df = pd.read_csv(DATA_DIR / pairs_csv)
-    print(f"\n{'=' * 70}\n{label} — {len(df)} rows\n{'=' * 70}")
-
-    print_vif(df, categories)
+def fit_side(df_side: pd.DataFrame, categories: list[str], outcomes: list[str],
+             base_rate_keys: dict, base_rates: dict, side: str, label: str):
+    print(f"\n{'-' * 60}\n{label} — side={side} — {len(df_side)} rows\n{'-' * 60}")
+    print_vif(df_side, categories)
     print()
 
-    models = {}
-    tables = {}
+    models, tables = {}, {}
     for outcome in outcomes:
-        model = fit_outcome(df, categories, outcome)
+        model = fit_outcome(df_side, categories, outcome)
         models[outcome] = model
         print(f"--- {outcome} ---")
-        print(model.params.round(6).to_string())
-        print(f"  R-squared: {model.rsquared:.4f}")
         for cat in categories:
             print(f"  {cat}: coef={model.params[cat]:.6f}  p={model.pvalues[cat]:.4g}")
-        reconciliation_check(df, categories, outcome, model, base_rates[base_rate_keys[outcome]])
-        tables[outcome] = build_table(model, categories, df)
+        print(f"  R-squared: {model.rsquared:.4f}")
+        reconciliation_check(df_side, categories, outcome, model, base_rates[base_rate_keys[outcome]])
+        tables[outcome] = build_table(model, categories, df_side)
         print()
 
-    leave_one_season_out(df, categories, outcomes, label)
-    extrapolation_sanity(df, categories, outcomes, models, label)
+    leave_one_season_out(df_side, categories, outcomes, f"{label} ({side})")
+    extrapolation_sanity(df_side, categories, outcomes, models, f"{label} ({side})")
 
-    # Reshape outcome-major tables into category-major (config.py's shape):
-    # category -> bucket_str -> {outcome_adj: value}
     category_major = {cat: {} for cat in categories}
     for outcome in outcomes:
         for cat in categories:
             for bucket, val in tables[outcome][cat].items():
-                category_major[cat].setdefault(bucket, {})[f"{outcome}{adj_suffix}"] = val
-
-    print(f"--- {label}: category-major table (paste into tables_native.py) ---")
-    for cat, buckets in category_major.items():
-        print(f'    "{cat}": {{')
-        for bucket, adj in sorted(buckets.items(), key=lambda kv: int(kv[0])):
-            adj_str = ", ".join(f'"{k}": {v}' for k, v in adj.items())
-            print(f'        "{bucket}": {{{adj_str}}},')
-        print("    },")
-
+                category_major[cat].setdefault(bucket, {})[f"{outcome}_adj"] = val
     return category_major
 
 
-# Category name as used for fitting (DataFrame column, possibly "_c"-suffixed
-# composite) -> the key config.py's own tables use for this same category.
-# Everything else just has "_c" stripped; "stamina" is the one category
-# whose fit-time column name doesn't already match config.py's capitalization
-# (PITCHING_COMPONENTS_ADJUST_MAP uses "Stamina").
-CATEGORY_KEY_OVERRIDES = {"stamina": "Stamina"}
+def run_side(pairs_csv: str, categories: list[str], outcomes: list[str],
+             base_rate_keys: dict, base_rates: dict, label: str) -> dict:
+    df = pd.read_csv(DATA_DIR / pairs_csv)
+    print(f"\n{'=' * 70}\n{label} — {len(df)} rows total (both sides)\n{'=' * 70}")
+
+    per_side_tables = {}
+    for side in SIDES:
+        per_side_tables[side] = fit_side(
+            df[df["side"] == side], categories, outcomes, base_rate_keys, base_rates, side, label,
+        )
+
+    # Reshape side-major into category-major (config.py's shape, one level
+    # deeper: category -> side -> bucket -> {outcome_adj}).
+    all_cats = categories
+    category_major = {cat: {} for cat in all_cats}
+    for side in SIDES:
+        for cat in all_cats:
+            category_major[cat][side] = per_side_tables[side][cat]
+    return category_major
 
 
-def _format_table_literal(name: str, category_major: dict, strip_suffix: str = "_c") -> str:
+def main():
+    hitting_table = run_side(
+        "hitting_pairs.csv", HITTING_CATEGORIES, HITTING_OUTCOMES,
+        HITTING_BASE_RATE_KEYS, BASE_HITTING_RATES, "HITTING",
+    )
+    pitching_table = run_side(
+        "pitching_pairs.csv", PITCHING_CATEGORIES, PITCHING_OUTCOMES,
+        PITCHING_BASE_RATE_KEYS, BASE_PITCHING_RATES, "PITCHING",
+    )
+
+    conn = db_connect()
+    weights = compute_exposure_weights(conn)
+    conn.close()
+    print("\nReal exposure weights (bats/throws -> fraction of PA/BF vs R/L):")
+    print(weights)
+
+    write_tables_native(hitting_table, pitching_table, weights)
+
+
+def _format_table_literal(name: str, category_major: dict, strip_suffix: str = "_side") -> str:
     lines = [f"{name} = {{"]
-    for cat, buckets in category_major.items():
+    for cat, sides in category_major.items():
         key = cat[: -len(strip_suffix)] if strip_suffix and cat.endswith(strip_suffix) else cat
         key = CATEGORY_KEY_OVERRIDES.get(key, key)
         lines.append(f'    "{key}": {{')
-        for bucket, adj in sorted(buckets.items(), key=lambda kv: int(kv[0])):
-            adj_str = ", ".join(f'"{k}": {v}' for k, v in adj.items())
-            lines.append(f'        "{bucket}": {{{adj_str}}},')
+        for side in SIDES:
+            lines.append(f'        "{side}": {{')
+            for bucket, adj in sorted(sides[side].items(), key=lambda kv: int(kv[0])):
+                adj_str = ", ".join(f'"{k}": {v}' for k, v in adj.items())
+                lines.append(f'            "{bucket}": {{{adj_str}}},')
+            lines.append("        },")
         lines.append("    },")
     lines.append("}")
     return "\n".join(lines)
 
 
-def write_tables_native(hitting_table: dict, pitching_table: dict):
+def write_tables_native(hitting_table: dict, pitching_table: dict, weights: dict):
     """
-    Writes calibration/tables_native.py — same exact shape as config.py's
-    BATTING_COMPONENTS_ADJUST_MAP/PITCHING_COMPONENTS_ADJUST_MAP (category ->
-    bucket-string -> {..._adj: value}), generated (not hand-copied) to avoid
-    transcription errors across ~600 coefficients, but still meant to be read
-    and reviewed before being treated as final — nothing downstream imports
-    fit_tables.py or recomputes these at runtime.
+    Writes calibration/tables_native.py — category -> side -> bucket ->
+    {outcome_adj: value}, one level deeper than config.py's own tables (which
+    have no side dimension at all) since rating_lookup.interpolate_lookup()
+    is called per-side already in metrics_*_native.py's existing per-side
+    loop — indexing table[cat][side] before calling it needs no changes
+    there. Generated (not hand-copied) to avoid transcription errors across
+    ~1,100 coefficients, but still meant to be read and reviewed.
     """
     out_path = Path(__file__).resolve().parent / "tables_native.py"
     header = '''"""
 Reviewed literal regression tables, fit against real PSD ratings-to-stats
 data (calibration/fit_tables.py) — see calibration/README.md for the full
-methodology (joint multivariate OLS per outcome, linear not polynomial/
-spline, category-mean-centered instead of a shared "50"). Generated by
-fit_tables.py, not hand-typed — reviewed before being treated as final, and
-not recomputed at import time or anywhere in the live pipeline.
+methodology (joint multivariate OLS per outcome, fit SEPARATELY per side
+against real split-specific performance — not a fit-time blended composite;
+linear not polynomial/spline; category-mean-centered instead of a shared
+"50"). Generated by fit_tables.py, not hand-typed — reviewed before being
+treated as final, and not recomputed at import time or anywhere in the live
+pipeline.
 
-Same shape as config.py's BATTING_COMPONENTS_ADJUST_MAP/
-PITCHING_COMPONENTS_ADJUST_MAP: category -> bucket-string -> {outcome_adj:
-value}. rating_lookup.interpolate_lookup() consumes this identically to
-config.py's tables, no changes needed there.
+Shape: category -> side ("R"/"L") -> bucket-string -> {outcome_adj: value}
+— one level deeper than config.py's tables (which have no side dimension).
+rating_lookup.interpolate_lookup() is called per-side already in
+metrics_*_native.py's existing R/L loop; index table[category][side] before
+calling it, no changes needed in rating_lookup.py itself.
+
+HANDEDNESS_WEIGHTS_NATIVE_HITTING/_PITCHING: real fraction of PA/BF against
+R- vs L-handed opponents, conditional on the player's OWN bats/throws —
+replaces config.py's flat HANDEDNESS_WEIGHTS={"R":0.7,"L":0.3} (applied
+identically to every player regardless of their own handedness; verified
+this was hiding real platooning — e.g. a lefty batter faces RHP ~83.7% of
+the time vs. a righty batter's ~72.7%). Keyed by bats ("L"/"R"/"S") for
+hitting, throws ("L"/"R") for pitching; each value is {"R": frac, "L": frac}.
 """
 
-# Workstream A (calibration/fit_runs_per_game.py) — real team-season wOBA/pwOBA
+'''
+    weights_block = (
+        f"HANDEDNESS_WEIGHTS_NATIVE_HITTING = {weights['hitting']!r}\n\n"
+        f"HANDEDNESS_WEIGHTS_NATIVE_PITCHING = {weights['pitching']!r}\n\n"
+    )
+    runs_block = '''# Workstream A (calibration/fit_runs_per_game.py) — real team-season wOBA/pwOBA
 # vs runs-per-162 regression, 32 teams x 3 complete seasons (2101-2103) each
 # side, R-squared 0.933 (hitting) / 0.926 (pitching), with the fitted team
 # slope rescaled to the per-650-PA player-season scale the consuming formula
@@ -255,20 +300,8 @@ RUNS_PER_GAME_PITCHING_CONST_NATIVE = 178.2959140
         + _format_table_literal("PITCHING_COMPONENTS_ADJUST_MAP_NATIVE", pitching_table)
         + "\n"
     )
-    out_path.write_text(header + body)
+    out_path.write_text(header + weights_block + runs_block + body)
     print(f"\nWrote {out_path}")
-
-
-def main():
-    hitting_table = run_side(
-        "hitting_pairs.csv", HITTING_CATEGORIES, HITTING_OUTCOMES,
-        HITTING_BASE_RATE_KEYS, BASE_HITTING_RATES, "_adj", "HITTING",
-    )
-    pitching_table = run_side(
-        "pitching_pairs.csv", PITCHING_CATEGORIES, PITCHING_OUTCOMES,
-        PITCHING_BASE_RATE_KEYS, BASE_PITCHING_RATES, "_adj", "PITCHING",
-    )
-    write_tables_native(hitting_table, pitching_table)
 
 
 if __name__ == "__main__":

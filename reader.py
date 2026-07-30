@@ -170,7 +170,7 @@ def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
     conn = _connect()
     column_list = ", ".join(f"r.{c}" for c in _RATING_SOURCE_COLUMNS)
     rows = conn.execute(f"""
-        SELECT r.player_id, r.age, {column_list}
+        SELECT r.player_id, r.age, r.bats, r.throws, {column_list}
         FROM player_ratings_history r
         WHERE r.source = ?
           AND r.as_of_game_date = (
@@ -185,6 +185,7 @@ def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
         record = {
             "player_id": row["player_id"],
             "age": row["age"],
+            "bats": row["bats"], "throws": row["throws"],
             "powP": row["power_pot"], "eyeP": row["eye_pot"],
             "avkP": row["avoid_k_pot"], "gapP": row["gap_pot"],
             "ctrlP": row["control_pot"], "stuffP": row["stuff_pot"],

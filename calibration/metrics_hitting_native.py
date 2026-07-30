@@ -1,18 +1,21 @@
 """
-Mirrors metrics_hitting.py's formula shape exactly (same wOBA-weight
-combination, same wOBA->runs->WAR conversion) but sources the per-category
-regression tables and RUNS_PER_GAME_HITTING_* constants from tables_native.py
-(genuinely fit to real PSD data — see calibration/README.md) instead of
-config.py's still-upstream values. BASE_HITTING_RATES, BATTING_WOBA_WEIGHTS,
-HANDEDNESS_WEIGHTS, RUNS_PER_WIN, DH_PENALTY, LEAGUE_WOBA, WOBA_SCALE,
-LEAGUE_RUNS_PER_PA are unchanged — already real-data-calibrated (Workstream B
-from Pass 3) or league-context constants not specific to this refit.
+Mirrors metrics_hitting.py's formula shape (same wOBA-weight combination,
+same wOBA->runs->WAR conversion) but sources the per-category regression
+tables from tables_native.py (genuinely fit to real PSD data — see
+calibration/README.md), fit SEPARATELY per side against real split-specific
+performance rather than a fit-time blended composite, and blends wOBAR/wOBAL
+using each player's own real bats-conditional exposure weight
+(HANDEDNESS_WEIGHTS_NATIVE_HITTING) instead of config.py's flat, never-refit
+HANDEDNESS_WEIGHTS={"R":0.7,"L":0.3} applied identically to every player —
+verified this was hiding real platooning (a lefty batter faces RHP ~83.7%
+of the time vs. a righty batter's ~72.7%). BASE_HITTING_RATES,
+BATTING_WOBA_WEIGHTS, RUNS_PER_WIN, DH_PENALTY, LEAGUE_WOBA, WOBA_SCALE,
+LEAGUE_RUNS_PER_PA are unchanged.
 """
 
 import pandas as pd
 from config import (
     BASE_HITTING_RATES,
-    HANDEDNESS_WEIGHTS,
     BATTING_WOBA_WEIGHTS,
     RUNS_PER_WIN,
     DH_PENALTY,
@@ -23,9 +26,15 @@ from config import (
 from rating_lookup import interpolate_lookup
 from tables_native import (
     BATTING_COMPONENTS_ADJUST_MAP_NATIVE,
+    HANDEDNESS_WEIGHTS_NATIVE_HITTING,
     RUNS_PER_GAME_HITTING_COEFF_NATIVE,
     RUNS_PER_GAME_HITTING_CONST_NATIVE,
 )
+
+# Fallback for a player with missing/unrecognized bats data (rare) — the
+# league-wide "R" bats profile, the largest and closest-to-average of the
+# three real cohorts (see HANDEDNESS_WEIGHTS_NATIVE_HITTING).
+_DEFAULT_HANDEDNESS_WEIGHTS = HANDEDNESS_WEIGHTS_NATIVE_HITTING["R"]
 
 
 def _runs_per_162(woba: pd.Series) -> pd.Series:
@@ -54,7 +63,7 @@ def calc_hitting_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
         }
 
         for category, rating in ratings.items():
-            table = BATTING_COMPONENTS_ADJUST_MAP_NATIVE[category]
+            table = BATTING_COMPONENTS_ADJUST_MAP_NATIVE[category][side]
             adjustment = interpolate_lookup(rating, table)
             for key, value in adjustment.items():
                 base_key = key.replace("_adj", "")
@@ -89,9 +98,10 @@ def calc_hitting_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
         BATTING_WOBA_WEIGHTS["3b_pct_wOBA_weight"] * df["3b_pctL"]
     )
 
+    weights = df["bats"].apply(lambda b: HANDEDNESS_WEIGHTS_NATIVE_HITTING.get(b, _DEFAULT_HANDEDNESS_WEIGHTS))
     df["wOBA"] = (
-        df["wOBAR"] * HANDEDNESS_WEIGHTS["R"] +
-        df["wOBAL"] * HANDEDNESS_WEIGHTS["L"]
+        df["wOBAR"] * weights.apply(lambda w: w["R"]) +
+        df["wOBAL"] * weights.apply(lambda w: w["L"])
     )
 
     df["war_hitting"] = (_runs_per_162(df["wOBA"]) / RUNS_PER_WIN).round(1)
@@ -103,8 +113,16 @@ def calc_hitting_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def calc_potential_hitting_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
-    """Expected wOBA/WAR for hitters from potential ratings (no handedness), native tables."""
-    def adjust_rates(row):
+    """
+    Expected wOBA/WAR for hitters from potential ratings, native tables.
+    Potential ratings have no L/R split (a single ceiling value per
+    category) — but the fitted table itself is now side-dependent (see
+    module docstring), so the same potential value is run through both the
+    R-side and L-side tables and blended by the player's own
+    bats-conditional weight, mirroring calc_hitting_metrics_native's R/L
+    blend exactly, just with one shared input value instead of two.
+    """
+    def adjust_rates(row, side):
         rates = {
             "hr_pct": BASE_HITTING_RATES["hr_pct_baserate"],
             "k_pct": BASE_HITTING_RATES["k_pct_baserate"],
@@ -124,7 +142,7 @@ def calc_potential_hitting_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
         }
 
         for category, rating in ratings.items():
-            table = BATTING_COMPONENTS_ADJUST_MAP_NATIVE[category]
+            table = BATTING_COMPONENTS_ADJUST_MAP_NATIVE[category][side]
             adjustment = interpolate_lookup(rating, table)
             for key, value in adjustment.items():
                 base_key = key.replace("_adj", "")
@@ -132,7 +150,12 @@ def calc_potential_hitting_metrics_native(df: pd.DataFrame) -> pd.DataFrame:
 
         return pd.Series(rates)
 
-    rates = df.apply(adjust_rates, axis=1)
+    rates_r = df.apply(lambda row: adjust_rates(row, "R"), axis=1)
+    rates_l = df.apply(lambda row: adjust_rates(row, "L"), axis=1)
+    weights = df["bats"].apply(lambda b: HANDEDNESS_WEIGHTS_NATIVE_HITTING.get(b, _DEFAULT_HANDEDNESS_WEIGHTS))
+    w_r = weights.apply(lambda w: w["R"])
+    w_l = weights.apply(lambda w: w["L"])
+    rates = rates_r.multiply(w_r, axis=0) + rates_l.multiply(w_l, axis=0)
     df = pd.concat([df, rates.add_suffix("P")], axis=1)
 
     df["wOBAP"] = (
