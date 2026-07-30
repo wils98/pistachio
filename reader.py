@@ -1,4 +1,3 @@
-import json
 import sqlite3
 
 import numpy as np
@@ -16,27 +15,47 @@ RATINGS_SOURCE = "osa"
 MLB_LEVEL_ID = 1
 OVERALL_SPLIT_ID = 1
 
-# Maps extra_json's raw (normalized) key -> pistachio's internal column name.
-# Everything here is a straight rename; no scale conversion, no polarity flip
-# (confirmed against psd-ootp's ingest/parse.py that avoid_k/ks is a bare alias).
-EXTRA_JSON_RENAMES = {
-    "pow_r": "powR", "pow_l": "powL",
-    "eye_r": "eyeR", "eye_l": "eyeL",
-    "gap_r": "gapR", "gap_l": "gapL",
-    "ks_r": "avkR", "ks_l": "avkL",
-    "babip_r": "babipR", "babip_l": "babipL",
-    "ctrl_r": "ctrlR", "ctrl_l": "ctrlL",
-    "stf_r": "stuffR", "stf_l": "stuffL",
-    "pbabip_r": "pbabipR", "pbabip_l": "pbabipL",
-    "hra_r": "hraR", "hra_l": "hraL",
-    "potbabip": "babipP", "pothra": "hraP", "potpbabip": "pbabipP",
+# player_ratings_history's own column name -> pistachio's internal column name.
+# As of psd-ootp commit 7e0151f (2026-07-30, "Flatten player_ratings_history:
+# promote every /ratings field out of JSON"), handedness splits, defense
+# grades, and pitch-type grades are all first-class typed columns —
+# defense_json/pitches_json no longer exist, and extra_json now holds nothing
+# pistachio needs (just a redundant "name" field). Straight renames only; no
+# scale conversion, no polarity flip (confirmed against psd-ootp's
+# src/ingest/parse.py's RATINGS_ALIASES that e.g. avoid_k_vs_r is a bare alias
+# of the old ks_r).
+RATING_SPLIT_RENAMES = {
+    "power_vs_r": "powR", "power_vs_l": "powL",
+    "eye_vs_r": "eyeR", "eye_vs_l": "eyeL",
+    "gap_vs_r": "gapR", "gap_vs_l": "gapL",
+    "avoid_k_vs_r": "avkR", "avoid_k_vs_l": "avkL",
+    "babip_vs_r": "babipR", "babip_vs_l": "babipL",
+    "control_vs_r": "ctrlR", "control_vs_l": "ctrlL",
+    "stuff_vs_r": "stuffR", "stuff_vs_l": "stuffL",
+    "pbabip_vs_r": "pbabipR", "pbabip_vs_l": "pbabipL",
+    "hra_vs_r": "hraR", "hra_vs_l": "hraL",
 }
 
-# defense_json's raw key -> pistachio's internal column name.
-DEFENSE_JSON_RENAMES = {
-    "cfrm": "Cfram", "cblk": "Cabil", "carm": "Carm",
-    "ofr": "OFrange", "ofa": "OFarm", "ofe": "OFerror",
-    "ifr": "IFrange", "ife": "IFerror", "ifa": "IFarm", "tdp": "turnDP",
+# Defense grades: formerly defense_json's raw key -> pistachio's internal
+# column name; now player_ratings_history's own def_* columns -> same names.
+DEFENSE_RENAMES = {
+    "def_cfrm": "Cfram", "def_cblk": "Cabil", "def_carm": "Carm",
+    "def_ofr": "OFrange", "def_ofa": "OFarm", "def_ofe": "OFerror",
+    "def_ifr": "IFrange", "def_ife": "IFerror", "def_ifa": "IFarm", "def_tdp": "turnDP",
+}
+
+# Pitch-type grades: formerly pitches_json's raw keys (which already matched
+# PITCH_RATING_COLUMNS/POTENTIAL_PITCH_RATING_COLUMNS's names directly, no
+# rename needed); now player_ratings_history's own pitch_*/pitch_*_pot
+# columns -> those same config.py names.
+PITCH_COLUMN_RENAMES = {
+    "pitch_fst": "fst", "pitch_snk": "snk", "pitch_cutt": "cutt", "pitch_crv": "crv",
+    "pitch_sld": "sld", "pitch_chg": "chg", "pitch_splt": "splt", "pitch_frk": "frk",
+    "pitch_circhg": "circhg", "pitch_scr": "scr", "pitch_kncrv": "kncrv", "pitch_knbl": "knbl",
+    "pitch_fst_pot": "potfst", "pitch_snk_pot": "potsnk", "pitch_cutt_pot": "potcutt",
+    "pitch_crv_pot": "potcrv", "pitch_sld_pot": "potsld", "pitch_chg_pot": "potchg",
+    "pitch_splt_pot": "potsplt", "pitch_frk_pot": "potfrk", "pitch_circhg_pot": "potcirchg",
+    "pitch_scr_pot": "potscr", "pitch_kncrv_pot": "potkncrv", "pitch_knbl_pot": "potknbl",
 }
 
 
@@ -130,20 +149,28 @@ def add_hitting_career_stats(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+_RATING_SOURCE_COLUMNS = (
+    ["power_pot", "eye_pot", "avoid_k_pot", "gap_pot", "control_pot", "stuff_pot",
+     "babip_pot", "hra_pot", "pbabip_pot", "stamina", "speed"]
+    + list(RATING_SPLIT_RENAMES.keys())
+    + list(DEFENSE_RENAMES.keys())
+    + list(PITCH_COLUMN_RENAMES.keys())
+)
+
+
 def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Pulls each player's most recent OSA-sourced ratings snapshot. Ratings are
-    a mix of first-class columns (current + potential for the main hit/pitch
-    tools, stamina, speed) and JSON blobs (extra_json for handedness splits +
-    potential-babip/hra/pbabip, defense_json for fielding grades, pitches_json
-    for per-pitch-type grades) — unpacked here in Python rather than via SQL
-    json_extract(), so every source key stays visible in one place.
+    Pulls each player's most recent OSA-sourced ratings snapshot. Every
+    rating pistachio uses — current + potential for the main hit/pitch
+    tools, handedness splits, defense grades, per-pitch-type grades — is a
+    first-class column on player_ratings_history (see RATING_SPLIT_RENAMES/
+    DEFENSE_RENAMES/PITCH_COLUMN_RENAMES's docstrings for the flattening
+    history); this just selects and renames them, no JSON unpacking needed.
     """
     conn = _connect()
-    rows = conn.execute("""
-        SELECT r.player_id, r.age, r.power_pot, r.eye_pot, r.avoid_k_pot, r.gap_pot,
-               r.control_pot, r.stuff_pot, r.stamina, r.speed,
-               r.defense_json, r.pitches_json, r.extra_json
+    column_list = ", ".join(f"r.{c}" for c in _RATING_SOURCE_COLUMNS)
+    rows = conn.execute(f"""
+        SELECT r.player_id, r.age, {column_list}
         FROM player_ratings_history r
         WHERE r.source = ?
           AND r.as_of_game_date = (
@@ -161,20 +188,15 @@ def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
             "powP": row["power_pot"], "eyeP": row["eye_pot"],
             "avkP": row["avoid_k_pot"], "gapP": row["gap_pot"],
             "ctrlP": row["control_pot"], "stuffP": row["stuff_pot"],
+            "babipP": row["babip_pot"], "hraP": row["hra_pot"], "pbabipP": row["pbabip_pot"],
             "stamina": row["stamina"], "speed": row["speed"],
         }
-
-        extra = json.loads(row["extra_json"] or "{}")
-        for raw_key, new_key in EXTRA_JSON_RENAMES.items():
-            record[new_key] = extra.get(raw_key)
-
-        defense = json.loads(row["defense_json"] or "{}")
-        for raw_key, new_key in DEFENSE_JSON_RENAMES.items():
-            record[new_key] = defense.get(raw_key)
-
-        pitches = json.loads(row["pitches_json"] or "{}")
-        for col in PITCH_RATING_COLUMNS + POTENTIAL_PITCH_RATING_COLUMNS:
-            record[col] = pitches.get(col)
+        for raw_key, new_key in RATING_SPLIT_RENAMES.items():
+            record[new_key] = row[raw_key]
+        for raw_key, new_key in DEFENSE_RENAMES.items():
+            record[new_key] = row[raw_key]
+        for raw_key, new_key in PITCH_COLUMN_RENAMES.items():
+            record[new_key] = row[raw_key]
 
         records.append(record)
 
@@ -184,11 +206,11 @@ def add_scouted_ratings(df: pd.DataFrame) -> pd.DataFrame:
 
 
 STOPGAP_SCALED_COLUMNS = (
-    list(EXTRA_JSON_RENAMES.values())
-    + list(DEFENSE_JSON_RENAMES.values())
+    list(RATING_SPLIT_RENAMES.values())
+    + list(DEFENSE_RENAMES.values())
     + PITCH_RATING_COLUMNS
     + POTENTIAL_PITCH_RATING_COLUMNS
-    + ["powP", "eyeP", "avkP", "gapP", "ctrlP", "stuffP", "stamina", "speed"]
+    + ["powP", "eyeP", "avkP", "gapP", "ctrlP", "stuffP", "babipP", "hraP", "pbabipP", "stamina", "speed"]
 )
 
 
