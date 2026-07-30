@@ -237,10 +237,40 @@ Also confirmed `config.py`'s `_load_env_file()` uses `os.environ.setdefault()`, 
 on disk has no effect on an already-running `serve.py` process (or anything it subprocess-spawns)
 until the service itself restarts.
 
+**Pass 6 (2026-07-30) — schema-flattening breakage fixed + the real native calibration built:**
+
+Two things, one urgent and one the long-planned item 4/5 work:
+
+- **psd-ootp flattened `player_ratings_history`** (its commit `7e0151f`: every /ratings field
+  promoted out of `defense_json`/`pitches_json`/`extra_json` into 94 first-class typed columns;
+  the two JSON defense/pitch columns dropped outright). `reader.py`'s `add_scouted_ratings()`
+  crashed outright against the live DB (`no such column: r.defense_json`) — found mid-session,
+  fixed immediately (new `RATING_SPLIT_RENAMES`/`DEFENSE_RENAMES`/`PITCH_COLUMN_RENAMES` maps
+  selecting the new columns directly, no JSON parsing left), verified against a local DB copy
+  (player 26's values match Pass 2's original spot-check exactly), deployed, live pages
+  regenerated via the Pass-5 refresh endpoint (204).
+- **`calibration/` — net-new native refit workstream** (deliberately additive; live pipeline
+  untouched — see `calibration/README.md` for methodology, data, and verification detail).
+  Data: 2101/2102 historical ratings dumps (user-sourced; StatsPlus's ratings endpoint has no
+  `?year=` unlike stats) + `2104-04-28` as 2103 proxy, joined stats-side (`level_id=1`,
+  `is_latest=1` — the rating rows' own `level_id` is unreliable for the historical dumps,
+  verified: 315/1,151 real 2102 MLB performers carry a different tag). ~1,580/1,535 usable
+  hit/pitch pairs. Fit: joint multivariate OLS per outcome, linear by design (constant edge
+  slope ⇒ `interpolate_lookup()` extrapolation stays exact), handedness composite at fit time,
+  per-category-mean zero points. wOBA→runs refit from 96 team-seasons (R²≈0.93) — **caught a
+  real scale bug in verification**: the raw team-scale slope is ~10x the per-player scale the
+  formula consumes (a real prospect projected 153 WAR); fixed by rescaling to per-650-PA and
+  anchoring CONST at league-average wOBA, after which the PSD slope landed within ~1.5% of
+  upstream's own independently-fit value. **Native beats the stopgap against real 2103
+  outcomes** (hitting Spearman 0.563 vs 0.466; pitching 0.364 vs 0.271). Output:
+  `hitters_native.html`/`pitchers_native.html` via `calibration/main_native.py`. Fielding +
+  role/eligibility thresholds deliberately still stopgap-based (no fielding-outcome data yet).
+  Cutover into `config.py` (and stopgap deletion) is a separate later decision.
+
 ## Current state (as of this writing)
 
 - `pistachio-serve.service`: **running** on the box, serving real projections against live PSD
-  data (re-exported after Pass 5's fixes) — `pa`/`ip` display columns are now correct too.
+  data (re-exported after Pass 6's reader.py fix) — `pa`/`ip` display columns are now correct too.
 - `pistachio-run.timer`: **disabled**, unchanged from Pass 1.
 - `/data-pistachio/{input,output}` and the old `PISTACHIO_INPUT_DIR`/
   `PISTACHIO_MAX_INPUT_AGE_DAYS` env vars are now **dead weight** — no longer read by any code

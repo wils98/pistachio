@@ -9,6 +9,14 @@ dependencies = [
     "jinja2>=3.1",
 ]
 
+# Only needed for calibration/ (one-off, human-run regression fitting against real PSD data —
+# see calibration/README.md) — never installed on the deployed box's plain `uv sync`.
+[project.optional-dependencies]
+calibration = [
+    "statsmodels>=0.14",
+    "matplotlib>=3.8",
+]
+
 # Flat top-level modules (main.py, config.py, ...), not an installable package —
 # uv just needs to manage the dependency venv, not build/install this project itself.
 [tool.uv]
