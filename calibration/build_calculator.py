@@ -119,7 +119,7 @@ HTML_TEMPLATE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Ratings &rarr; wOBA/WAR Calculator</title>
+<title>Ratings → wOBA/WAR Calculator</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
 :root {{
