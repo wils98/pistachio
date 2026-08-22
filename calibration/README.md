@@ -21,9 +21,9 @@ need `uv sync --extra calibration` (statsmodels/matplotlib); `main_native.py`/`b
 themselves need only the base deps — `tables_native.py` is literal constants, nothing is refit
 at runtime.
 
-## Data & methodology (settled 2026-07-30, see NOTES.md Pass 6/7)
+## Data & methodology (settled 2026-07-30, see NOTES.md Pass 6/7; extended 2026-08-22, Pass 8)
 
-Three concurrent (same-season), **split-aware** MLB-only pairs — population driven from the
+Four concurrent (same-season), **split-aware** MLB-only pairs — population driven from the
 **stats side** (`level_id=1`, `is_latest=1`), never the rating row's own unreliable `level_id`.
 Split-aware means: real per-player vsR/vsL performance
 (`player_batting_stats_history.split_id` — 2=vsL, 3=vsR) is paired with the *matching side's*
@@ -35,15 +35,23 @@ per-split floor drops noisy small samples:
 | 2101 | `2101-12-31` (real dump) | 367 / 334 | 353 / 344 |
 | 2102 | `2102-12-31` (real dump) | 512 / 455 | 505 / 478 |
 | 2103 | `2104-04-28` (proxy — no true 2103 dump) | 549 / 472 | 528 / 469 |
+| 2104 | `2104-10-11` (real, season-end) | 559 / 482 | 534 / 485 |
 
-**Workstream A** (wOBA→runs): OLS of team-season runs/162 on team wOBA (96 team-seasons/side,
-R²≈0.93), slope rescaled to the per-650-PA player scale the formula consumes, CONST anchored at
-league-average wOBA (the same structural zero upstream's constants encode). The rescaled PSD
-hitting slope (546.6) independently landed within ~1.5% of upstream's 554.8 — the slope is
-near-universal; the league-context constant is what needed recalibrating. (First attempt
-shipped the raw team-scale slope — ~10x too steep, a real prospect projected at 153 WAR;
-caught in verification, documented in `fit_runs_per_game.py`'s docstring.) Unaffected by the
-split-aware rework below — this regression operates on already-blended team wOBA.
+2104 was added once that season finished (Pass 8) — its `MAX(as_of_game_date)` for ratings
+matches the stats' own `MAX(as_of_game_date)` exactly, a genuine end-of-season pairing, not a
+proxy like 2103 needed. (Team-level `g`/`w`/`l` are never populated for live-ingested seasons,
+even finished ones — only the historical-backfill import sets them; `extract_team_runs.py`
+defaults `g` to 162 there, justified by 2104's total PA already closely matching the other three
+confirmed-162-game seasons.)
+
+**Workstream A** (wOBA→runs): OLS of team-season runs/162 on team wOBA (128 team-seasons/side
+as of Pass 8, R²≈0.93), slope rescaled to the per-650-PA player scale the formula consumes,
+CONST anchored at league-average wOBA (the same structural zero upstream's constants encode).
+The rescaled PSD hitting slope (~547) independently landed within ~1.5% of upstream's 554.8 —
+the slope is near-universal; the league-context constant is what needed recalibrating. (First
+attempt shipped the raw team-scale slope — ~10x too steep, a real prospect projected at 153
+WAR; caught in verification, documented in `fit_runs_per_game.py`'s docstring.) Unaffected by
+the split-aware rework below — this regression operates on already-blended team wOBA.
 
 **Workstream B** (per-category tables) — **split-aware, rebuilt same day.** One joint
 multivariate OLS per outcome (6 hitting, 4 pitching outcomes; all categories as simultaneous
@@ -88,19 +96,25 @@ blended fit's 0.19–0.42) and better real-world predictive power — see Verifi
   deleting the stopgap) is a separate, deliberate decision once the side-by-side comparison
   has been reviewed.
 
-## Verification results (2026-07-30, local copy of live DB, split-aware version)
+## Verification results (2026-08-22, local copy of live DB, 4-season split-aware version)
 
-- Full native run: 17,862 players, 0% NaN, `best` −8.8…10.4, `war_pitching` −7.1…3.9, single
-  leader at the top (no ceiling clustering — the exact Pass-5 bug class, rechecked).
-- **Against real 2103 outcomes (real R+L splits recombined into a real aggregate wOBA/pwOBA,
-  for an honest apples-to-apples comparison), native beats the production stopgap by a wider
-  margin than the first (non-split-aware) version did**: hitting predicted-wOBA Spearman
-  **0.635 vs. 0.500**; pitching **0.432 vs. 0.330**. (First version: 0.563/0.466 and
-  0.364/0.271 — the split-aware rebuild is a genuine improvement, not just a different number.)
-- Native vs production rankings still correlate strongly for hitting (best 0.95, bestP 0.98) —
-  same relative ordering, recalibrated absolute scale.
-- Floor-tie walls (thousands of pitchers/hitters at the same floor value) are position players
-  whose all-1 pitching ratings correctly collapse to identical projections — not a top-end bug.
+- Full native run: 18,187 players, 0% NaN, `wOBA` 0.155…0.466, `war_pitching` −7.2…4.2 — sane
+  ranges, no ceiling clustering (the exact Pass-5 bug class, rechecked).
+- **Genuine held-out generalization** (`fit_tables.py`'s leave-one-season-out CV, 2104 fold —
+  the model fit *without* 2104, evaluated against 2104 it never saw): strong on the
+  highest-signal categories, e.g. hitting-R `k_pct` Pearson 0.827, `hr_pct` 0.654, `bb_pct`
+  0.691; pitching-R `k_vs` 0.701. This is the honest predictive-power number — 2104 is now part
+  of the *final* model's training data, so a same-model-same-data comparison against 2104 would
+  be in-sample, not a real test.
+- In-sample check against real 2104 outcomes (aggregate wOBA/pwOBA, real R+L splits
+  recombined) still shows native clearly ahead of the production stopgap: hitting Spearman
+  **0.616 vs. 0.496**; pitching **0.454 vs. 0.359** — consistent with, not a substitute for,
+  the held-out CV number above.
 - `calculator.html`'s JS port re-verified for exact numeric parity against the real Python
-  functions post-rebuild, including the bats-conditional blend (both `bats="L"` and `bats="R"`
-  profiles checked against a real prospect rating set).
+  functions post-rebuild, including the bats-conditional blend.
+
+### Prior verification (2026-07-30, 3-season version, kept for history)
+
+- Against real 2103 outcomes, split-aware beat the first (non-split-aware) version's own
+  real-outcome check: hitting Spearman 0.635 vs. 0.563; pitching 0.432 vs. 0.364 — confirming
+  the split-aware rebuild was a genuine improvement, not just a different number.

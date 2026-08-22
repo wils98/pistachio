@@ -304,6 +304,34 @@ code, and meant real split data sat unused). Rebuilt properly:
   match (bats/throws selector, shows the vsR/vsL breakdown feeding the blend) and re-verified
   for exact numeric parity against the real Python functions.
 
+**Pass 8 (2026-08-22) — season 2104 finished; added as a 4th real training season:**
+
+User prompt: 2104 finished, all stats now complete, latest ratings snapshot should line up.
+Verified directly: 2104 total PA (205,660) now matches 2101-2103's ~202-205k range (a genuinely
+complete season), and the latest ratings snapshot (`2104-10-11`) exactly matches the stats'
+own latest `as_of_game_date` — a real, non-proxy end-of-season pairing, better than what 2103
+ever had.
+
+- `extract_team_runs.py`/`extract_pairs.py`: `SEASONS`/`SEASON_RATING_PAIRS` extended to include
+  2104 (`2104-10-11` ratings × 2104 stats). **Found and fixed en route**: team-level `g`/`w`/`l`
+  are never populated for live-ingested seasons (even finished ones — only the historical-backfill
+  import sets them; confirmed team `w`/`l` NULL for all 2104 rows, though individual pitchers'
+  own `g`/`w`/`l` *are* populated). `extract_team_runs.py` now defaults `g` to 162 when NULL —
+  justified directly by 2104's total PA already closely matching the other three confirmed-162-game
+  seasons, not just assumed.
+- Workstream A refit on 128 team-seasons (up from 96): `RUNS_PER_GAME_HITTING_COEFF/_CONST` →
+  547.11/178.26, pitching → 557.79/182.58 (R²=0.935/0.923, consistent with before).
+- Workstream B refit on 3,730/3,696 hitting/pitching pairs (up from 2,689/2,677): R² values held
+  steady (e.g. hitting-vs-RHP still 0.44–0.68), confirming stability, not overfitting to the new
+  season.
+- **Genuine held-out validation this time**: `fit_tables.py`'s leave-one-season-out CV's 2104
+  fold (fit *without* 2104, tested against it) showed strong generalization — hitting-R `k_pct`
+  Pearson 0.827, `hr_pct` 0.654, `bb_pct` 0.691; pitching-R `k_vs` 0.701. This is the honest
+  predictive-power number now that 2104 is part of the final model's own training data (an
+  in-sample check against 2104 would no longer be a real test — still ran one for continuity
+  with prior passes' reporting style: 0.616/0.454 native vs 0.496/0.359 production, hitting/pitching).
+- `calculator.html` regenerated with the updated tables/constants; numeric parity re-verified.
+
 ## Current state (as of this writing)
 
 - `pistachio-serve.service`: **running** on the box, serving real projections against live PSD

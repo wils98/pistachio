@@ -1,12 +1,16 @@
 """
 Workstream B data extraction: builds the verified MLB ratings<->stats pairs
-for 2101/2102/2103 (methodology settled this session — see memory
+for 2101/2102/2103/2104 (methodology settled this session — see memory
 project-historical-ratings-calibration-plan / NOTES.md), split-aware.
 
-Three concurrent (same-season) pairs:
+Four concurrent (same-season) pairs:
     2101: ratings as_of 2101-12-31 (real dump)  x  2101 stats
     2102: ratings as_of 2102-12-31 (real dump)  x  2102 stats
     2103: ratings as_of 2104-04-28 (proxy - no true 2103-12-31 dump exists) x 2103 stats
+    2104: ratings as_of 2104-10-11 (real, season-end - added 2026-08-22 once
+          2104 finished; the live ratings snapshot's own MAX(as_of_game_date)
+          matches the stats' own MAX(as_of_game_date) exactly, a genuine
+          end-of-season pairing, not a proxy)
 
 Population is built from the STATS side (level_id=1, is_latest=1 for that
 season), not from player_ratings_history's own level_id — verified this
@@ -65,6 +69,7 @@ SEASON_RATING_PAIRS = [
     (2101, "2101-12-31"),
     (2102, "2102-12-31"),
     (2103, "2104-04-28"),  # proxy, no true 2103-12-31 dump exists
+    (2104, "2104-10-11"),  # real, season-end
 ]
 
 # side -> (stats split_id, hitting rating suffix, pitching rating suffix)
@@ -222,7 +227,7 @@ def compute_exposure_weights(conn: sqlite3.Connection) -> dict:
                    ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY as_of_game_date DESC) AS rn
             FROM player_ratings_history WHERE source = ?
         ) b ON b.player_id = s.player_id AND b.rn = 1
-        WHERE s.level_id = ? AND s.season_year IN (2101, 2102, 2103)
+        WHERE s.level_id = ? AND s.season_year IN (2101, 2102, 2103, 2104)
           AND s.is_latest = 1 AND s.split_id IN (?, ?)
           AND b.bats IN ('L', 'R', 'S')
         GROUP BY b.bats, s.split_id
@@ -239,7 +244,7 @@ def compute_exposure_weights(conn: sqlite3.Connection) -> dict:
                    ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY as_of_game_date DESC) AS rn
             FROM player_ratings_history WHERE source = ?
         ) p ON p.player_id = s.player_id AND p.rn = 1
-        WHERE s.level_id = ? AND s.season_year IN (2101, 2102, 2103)
+        WHERE s.level_id = ? AND s.season_year IN (2101, 2102, 2103, 2104)
           AND s.is_latest = 1 AND s.split_id IN (?, ?)
           AND p.throws IN ('L', 'R')
         GROUP BY p.throws, s.split_id

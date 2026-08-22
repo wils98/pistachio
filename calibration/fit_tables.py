@@ -275,23 +275,24 @@ hitting, throws ("L"/"R") for pitching; each value is {"R": frac, "L": frac}.
         f"HANDEDNESS_WEIGHTS_NATIVE_PITCHING = {weights['pitching']!r}\n\n"
     )
     runs_block = '''# Workstream A (calibration/fit_runs_per_game.py) — real team-season wOBA/pwOBA
-# vs runs-per-162 regression, 32 teams x 3 complete seasons (2101-2103) each
-# side, R-squared 0.933 (hitting) / 0.926 (pitching), with the fitted team
-# slope rescaled to the per-650-PA player-season scale the consuming formula
-# expects, and CONST anchored so zero runs lands at the league-average
-# wOBA/pwOBA — the same structural zero point upstream's own constants encode
-# (their CONST/COEFF ratio decodes to ~their league average). See
+# vs runs-per-162 regression, 32 teams x 4 complete seasons (2101-2104,
+# 2104 added 2026-08-22 once that season finished) each side, R-squared
+# 0.935 (hitting) / 0.923 (pitching), with the fitted team slope rescaled
+# to the per-650-PA player-season scale the consuming formula expects, and
+# CONST anchored so zero runs lands at the league-average wOBA/pwOBA — the
+# same structural zero point upstream's own constants encode (their
+# CONST/COEFF ratio decodes to ~their league average). See
 # fit_runs_per_game.py's docstring for the scale bug this fixes (the raw
 # team-scale slope is ~10x steeper; feeding one player's wOBA through it gave
 # a real prospect 153 WAR). Validation: the rescaled PSD hitting slope
-# (546.6) independently lands within ~1.5% of upstream's own 554.8, fit on a
+# (~547) independently lands within ~1.5% of upstream's own 554.8, fit on a
 # different league's data — the slope is near-universal wOBA physics; the
 # league-context CONST is what genuinely needed recalibrating. Not recomputed
 # by this script — transcribed once from fit_runs_per_game.py's own output.
-RUNS_PER_GAME_HITTING_COEFF_NATIVE = 546.6257409
-RUNS_PER_GAME_HITTING_CONST_NATIVE = 177.5116187
-RUNS_PER_GAME_PITCHING_COEFF_NATIVE = 546.6000114
-RUNS_PER_GAME_PITCHING_CONST_NATIVE = 178.2959140
+RUNS_PER_GAME_HITTING_COEFF_NATIVE = 547.1141040
+RUNS_PER_GAME_HITTING_CONST_NATIVE = 178.2639902
+RUNS_PER_GAME_PITCHING_COEFF_NATIVE = 557.7915158
+RUNS_PER_GAME_PITCHING_CONST_NATIVE = 182.5819724
 
 '''
     body = (

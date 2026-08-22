@@ -1,9 +1,11 @@
 """
 Workstream A data extraction: pulls each team's real season batting/pitching
-lines across 2101-2103 (complete historical seasons) and computes real
-team-season wOBA (BATTING_WOBA_WEIGHTS/PITCHING_WOBA_WEIGHTS, straight from
-config.py, unchanged) paired with real runs scored/allowed per 162 games —
-the raw material fit_runs_per_game.py regresses to refit
+lines across 2101-2104 (2101-2103 complete historical seasons; 2104 added
+2026-08-22 once its season finished — verified complete, 205,660 total PA,
+matching 2101-2103's ~202-205k range) and computes real team-season wOBA
+(BATTING_WOBA_WEIGHTS/PITCHING_WOBA_WEIGHTS, straight from config.py,
+unchanged) paired with real runs scored/allowed per 162 games — the raw
+material fit_runs_per_game.py regresses to refit
 RUNS_PER_GAME_HITTING_COEFF/_CONST and the pitching equivalent.
 
 team_pitching_stats_history has no bf (batters faced) column. The league-wide
@@ -31,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 from config import DB_PATH, BATTING_WOBA_WEIGHTS, PITCHING_WOBA_WEIGHTS
 
-SEASONS = [2101, 2102, 2103]
+SEASONS = [2101, 2102, 2103, 2104]
 OVERALL_SPLIT_ID = 1
 
 
@@ -53,6 +55,17 @@ def extract_hitting(conn: sqlite3.Connection) -> pd.DataFrame:
         frame["season_year"] = season
         frames.append(frame)
     df = pd.concat(frames, ignore_index=True)
+
+    # g is only populated for the historical-backfilled seasons (2101-2103,
+    # hardcoded to 162 during that import); live-ingested seasons (2104, even
+    # once finished) never get a team-level g at all — confirmed team-level
+    # w/l are NULL too, though individual pitchers' own g/w/l ARE populated.
+    # Default to 162 rather than deriving from player-level MAX(g) (a team
+    # with no single iron-man pitcher could read < 162 even in a real
+    # 162-game season) — justified here by 2104's total PA (205,660) already
+    # closely matching the other three seasons' confirmed-162-game totals
+    # (202,553-205,694), strong indirect confirmation of a standard season.
+    df["g"] = df["g"].fillna(162)
 
     singles = df["h"] - df["d"] - df["t"] - df["hr"]
     df["hr_pct"] = df["hr"] / df["pa"]
@@ -85,6 +98,7 @@ def extract_pitching(conn: sqlite3.Connection) -> pd.DataFrame:
         frame["season_year"] = season
         frames.append(frame)
     df = pd.concat(frames, ignore_index=True)
+    df["g"] = df["g"].fillna(162)  # see extract_hitting()'s comment
 
     df["bf_approx"] = df["outs"] + df["ha"] + df["bb"]
     h_nothr = df["ha"] - df["hra"]
