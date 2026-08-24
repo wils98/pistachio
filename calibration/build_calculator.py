@@ -258,6 +258,13 @@ td.neg {{ color: var(--negative); }}
 .stat .value {{ font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 1.5rem; font-weight: 800; margin-top: 0.15rem; }}
 .step {{ color: var(--text-dim); font-size: 0.8rem; margin-top: 0.9rem; font-family: var(--font-mono); }}
 .step b {{ color: var(--text); }}
+.impact-row {{ display: grid; grid-template-columns: 5.5rem 1fr 4.2rem; align-items: center; gap: 0.6rem; margin-bottom: 0.55rem; }}
+.impact-row:last-child {{ margin-bottom: 0; }}
+.impact-label {{ font-size: 0.82rem; font-weight: 600; }}
+.impact-track {{ background: var(--surface-2); border-radius: 4px; height: 0.6rem; overflow: hidden; }}
+.impact-fill {{ background: var(--accent); height: 100%; border-radius: 4px; }}
+.impact-value {{ font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.78rem; text-align: right; color: var(--text-dim); }}
+.impact-hint {{ font-size: 0.75rem; color: var(--text-dim); margin-top: 0.75rem; }}
 .panel {{ display: none; }}
 .panel.active {{ display: block; }}
 footer {{ margin-top: 2.5rem; color: var(--text-dim); font-size: 0.78rem; max-width: 68ch; }}
@@ -293,6 +300,12 @@ footer a {{ color: var(--accent); }}
       </div>
       <div>
         <div class="card">
+          <h2>Rating impact <span class="hint">wOBA per +10 rating points, this bats side</span></h2>
+          <div id="hitting-impact"></div>
+          <div class="impact-hint">Constant per category (the fit is linear) &mdash; ranks which
+          rating moves wOBA most, independent of where its slider currently sits.</div>
+        </div>
+        <div class="card">
           <h2>Rate build-up <span class="hint">vs RHP, vs LHP, then real-exposure blend</span></h2>
           <div class="table-scroll"><table id="hitting-breakdown"></table></div>
         </div>
@@ -324,6 +337,12 @@ footer a {{ color: var(--accent); }}
         </div>
       </div>
       <div>
+        <div class="card">
+          <h2>Rating impact <span class="hint">pwOBA improvement per +10 points, this throws side</span></h2>
+          <div id="pitching-impact"></div>
+          <div class="impact-hint">Constant per category (the fit is linear) &mdash; ranks which
+          rating suppresses pwOBA most, independent of where its slider currently sits.</div>
+        </div>
         <div class="card">
           <h2>Rate build-up <span class="hint">vs RHB, vs LHB, then real-exposure blend</span></h2>
           <div class="table-scroll"><table id="pitching-breakdown"></table></div>
@@ -556,7 +575,57 @@ function renderExposure(side, result) {{
   const opp = side === "hitting" ? ["RHP", "LHP"] : ["RHB", "LHB"];
   document.getElementById(`${{side}}-exposure`).innerHTML =
     `Real ${{cfg.handLabel.toLowerCase()}} ${{state[side].hand}} exposure: <b>${{(result.weights.R * 100).toFixed(1)}}%</b> ${{noun}} vs ${{opp[0]}}, ` +
-    `<b>${{(result.weights.L * 100).toFixed(1)}}%</b> vs ${{opp[1]}} (calibration/extract_pairs.py, real 2101-2103 stats).`;
+    `<b>${{(result.weights.L * 100).toFixed(1)}}%</b> vs ${{opp[1]}} (calibration/extract_pairs.py, real 2101-2104 stats).`;
+}}
+
+// Each category's table is a straight line (fit deliberately linear — see
+// rating_lookup.py), so its slope (== the original OLS coefficient) is
+// recoverable directly from any two bucket points; using the table's own
+// first/last keys avoids relying on a fixed 5-point bucket gap. Sums each
+// category's per-outcome slope weighted by the wOBA weights, blended R/L by
+// the currently selected hand's real exposure weight — same blend the main
+// calculation uses, just applied to the coefficients instead of the rates.
+function tableSlope(table) {{
+  const keys = Object.keys(table).sort((a, b) => parseFloat(a) - parseFloat(b));
+  const lo = keys[0], hi = keys[keys.length - 1];
+  const x0 = parseFloat(lo), x1 = parseFloat(hi);
+  const y0 = table[lo], y1 = table[hi];
+  const slope = {{}};
+  for (const k in y0) {{ slope[k] = (y1[k] - y0[k]) / (x1 - x0); }}
+  return slope;
+}}
+
+function computeMarginalImpact(side) {{
+  const cfg = DATA[side];
+  const weights = cfg.handednessWeights[state[side].hand] || cfg.handednessWeights[cfg.defaultHand];
+  const impacts = cfg.categories.map(cat => {{
+    const slopeR = tableSlope(cfg.table[cat]["R"]);
+    const slopeL = tableSlope(cfg.table[cat]["L"]);
+    let perPoint = 0;
+    for (const o in cfg.wobaWeights) {{
+      const blended = slopeR[`${{o}}_adj`] * weights.R + slopeL[`${{o}}_adj`] * weights.L;
+      perPoint += blended * cfg.wobaWeights[o];
+    }}
+    return {{ cat, perPoint }};
+  }});
+  impacts.sort((a, b) => Math.abs(b.perPoint) - Math.abs(a.perPoint));
+  return impacts;
+}}
+
+function renderImpact(container, side, impacts) {{
+  const maxAbs = Math.max(...impacts.map(i => Math.abs(i.perPoint))) || 1;
+  const sign = side === "pitching" ? -1 : 1; // pitching: lower pwOBA is better, flip for "improvement"
+  container.innerHTML = impacts.map(({{ cat, perPoint }}) => {{
+    const per10 = perPoint * 10 * sign;
+    const pct = (Math.abs(perPoint) / maxAbs) * 100;
+    return `
+      <div class="impact-row">
+        <div class="impact-label">${{CATEGORY_LABELS[cat]}}</div>
+        <div class="impact-track"><div class="impact-fill" style="width:${{pct}}%"></div></div>
+        <div class="impact-value">${{per10 >= 0 ? "+" : ""}}${{per10.toFixed(4)}}</div>
+      </div>
+    `;
+  }}).join("");
 }}
 
 function refreshHitting() {{
@@ -566,6 +635,7 @@ function refreshHitting() {{
   renderBreakdown(document.getElementById("hitting-breakdown"), "hitting", result);
   renderWoba(document.getElementById("hitting-woba"), document.getElementById("hitting-summary"), "hitting", result);
   renderExposure("hitting", result);
+  renderImpact(document.getElementById("hitting-impact"), "hitting", computeMarginalImpact("hitting"));
 }}
 
 function refreshPitching() {{
@@ -575,6 +645,7 @@ function refreshPitching() {{
   renderBreakdown(document.getElementById("pitching-breakdown"), "pitching", result);
   renderWoba(document.getElementById("pitching-woba"), document.getElementById("pitching-summary"), "pitching", result);
   renderExposure("pitching", result);
+  renderImpact(document.getElementById("pitching-impact"), "pitching", computeMarginalImpact("pitching"));
 }}
 
 buildInputs(document.getElementById("hitting-inputs"), "hitting");
