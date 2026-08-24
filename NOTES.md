@@ -332,6 +332,41 @@ ever had.
   with prior passes' reporting style: 0.616/0.454 native vs 0.496/0.359 production, hitting/pitching).
 - `calculator.html` regenerated with the updated tables/constants; numeric parity re-verified.
 
+**Pass 9 (2026-08-24) — role/eligibility thresholds refit natively (Phase A of "close the
+remaining gaps"):**
+
+`calibration/README.md` had flagged `MINIMUM_STARTER_STAMINA`/`PITCH_MINIMUM_RATING`/
+`POSITION_THRESHOLDS` as still stopgap-domain since Pass 6 — these decide pitcher role (sp/rp)
+and position eligibility, but were never refit for PSD's native 1-100 scale the way Workstream
+A/B's rate tables were. Rather than cut over to native now with these still outstanding, closed
+the gap first.
+
+- New `calibration/extract_thresholds.py`: not a regression like Workstream A/B — a binary
+  classification problem (does this rating clear a cutoff that predicts the real label). Each
+  threshold refit by scanning candidate cutoffs and picking the one maximizing Youden's J
+  (sensitivity + specificity − 1) against real outcomes: starter/reliever from
+  `player_pitching_stats_history` (`gs`/`g` ≥ 0.5, `g` ≥ 10), primary position from
+  `player_fielding_stats_history` (most real games played that season, `g` ≥ 20) — across all 4
+  training seasons.
+- Results (old stopgap-domain value → new native value): `MINIMUM_STARTER_STAMINA` 40→37
+  (J=0.535, n=1,939 pitcher-seasons); `PITCH_MINIMUM_RATING` 45→23 (J=0.591, jointly optimized
+  with the stamina cutoff); `POSITION_THRESHOLDS`, per-component, n=1,562 fielder-seasons — see
+  `calibration/README.md`'s table for the full breakdown. Catcher components all hit J=1.000 (a
+  real, wide separation from non-catchers, not a precisely-pinned boundary — flagged as such,
+  not treated as more precise than it is).
+- Writes reviewed literals to new `calibration/thresholds_native.py`. `main_native.py` now
+  computes `pitches`/`pitchesP`/`field`/`sprp`/`sprpP` directly on raw ratings via two new
+  functions (`count_pitches_native()`/`can_field_native()`), replacing the previous
+  stopgap-scaled-copy workaround entirely for role/eligibility. Fielding *value*
+  (`FIELDING_RUN_VALUES_VS_REPLACEMENT`, Phase B — separate from eligibility above) is still
+  deferred and still stopgap-based; not part of this pass.
+- Verified end-to-end: 0% NaN on `field`/`stamina`/`pitches`; role distribution sane (2,280 rp /
+  1,472 sp / 14,435 non-pitching or below-threshold, out of 18,187 players, no collapse to one
+  class); position eligibility spans all 7 covered positions with a sane single/multi-position mix.
+- Phase B (fielding value refit) not started — still gated on resolving what `zr`/`eff`/
+  `framing`/`arm` actually measure (see the approved plan's investigation steps) before any
+  fitting code gets written.
+
 ## Current state (as of this writing)
 
 - `pistachio-serve.service`: **running** on the box, serving real projections against live PSD
@@ -366,11 +401,14 @@ ever had.
 3. ~~Unblock the crash so the pipeline can run at all~~ — **done (interim stopgap), Pass 3
    Workstream A.** Not the same as real calibration — see Known Limitations.
 4. **Rebuild the regression tables natively for the 1-100 domain** — the real fix Workstream A
-   stands in for. `BATTING_COMPONENTS_ADJUST_MAP`, `PITCHING_COMPONENTS_ADJUST_MAP`,
-   `FIELDING_RUN_VALUES_VS_REPLACEMENT`, `POSITION_THRESHOLDS`, `PITCH_MINIMUM_RATING` all need
-   re-keying and refitting to PSD's actual scale and league behavior — not just new coefficients
-   at the same bucket keys. Once this lands, Workstream A's `apply_native_scale_stopgap()` call
-   in `main.py` should be deleted (it's isolated to one function, one call site, by design).
+   stands in for. `BATTING_COMPONENTS_ADJUST_MAP`/`PITCHING_COMPONENTS_ADJUST_MAP` ~~done~~
+   (Pass 6/7/8, `calibration/tables_native.py`). `POSITION_THRESHOLDS`/`PITCH_MINIMUM_RATING`/
+   `MINIMUM_STARTER_STAMINA` ~~done~~ (Pass 9, `calibration/thresholds_native.py`).
+   `FIELDING_RUN_VALUES_VS_REPLACEMENT` still outstanding (Phase B, gated on resolving real
+   fielding-outcome data semantics first — see the approved plan). Once all of this lands in
+   `calibration/` *and* a cutover is deliberately decided, `main.py`'s
+   `apply_native_scale_stopgap()` call should be deleted (it's isolated to one function, one
+   call site, by design).
 5. **Refit the `RUNS_PER_GAME_*_COEFF`/`_CONST` regression** and the deep tables from point 4
    against real PSD (ratings snapshot → subsequent performance) pairs. psd-ootp's DB has the
    right shape (point-in-time snapshots joinable to career stat history) but only ~3 snapshot

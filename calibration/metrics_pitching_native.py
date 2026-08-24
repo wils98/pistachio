@@ -13,16 +13,12 @@ stack right-handed batters against LHP specifically). BASE_PITCHING_RATES,
 PITCHING_WOBA_WEIGHTS, RUNS_PER_WIN, RELIEVER_VS_STARTER_AVERAGE_IP unchanged.
 
 One deliberate deviation from metrics_pitching.py's shape: role
-classification (sp/rp, "sprp"/"sprpP") is NOT computed here. It depends on
-PITCH_MINIMUM_RATING/MINIMUM_STARTER_STAMINA — bare thresholds calibrated to
-the stopgap-scaled (20-80ish) domain, explicitly out of scope for this
-refit (see calibration/README.md's "what's deferred" section, same reason
-FIELDING_RUN_VALUES_VS_REPLACEMENT/POSITION_THRESHOLDS are deferred). Mixing
-a stopgap-scaled stamina threshold with a raw-scale Stamina table lookup in
-the same function would silently misapply one or the other. main_native.py
-computes sprp/sprpP the same way production does (stopgap-scaled) and passes
-them in as already-existing columns; this file only does the genuinely
-native rate/WAR math.
+classification (sp/rp, "sprp"/"sprpP") is NOT computed here. main_native.py
+computes it directly on raw ratings using thresholds_native.py's refit
+MINIMUM_STARTER_STAMINA_NATIVE/PITCH_MINIMUM_RATING_NATIVE (Phase A of
+"close the remaining gaps", see calibration/README.md) and passes sprp/sprpP
+in as already-existing columns; this file only does the genuinely native
+rate/WAR math.
 """
 
 import pandas as pd

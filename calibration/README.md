@@ -11,6 +11,7 @@ standalone and produces its own `*_native.html` pages for side-by-side compariso
 extract_team_runs.py  ─→ data/team_*_runs.csv      ─→ fit_runs_per_game.py   (Workstream A)
 extract_pairs.py      ─→ data/{hitting,pitching}_pairs.csv ─→ fit_tables.py  (Workstream B)
                                                         └─→ writes tables_native.py
+extract_thresholds.py ─→ data/{role,position}_dataset.csv, writes thresholds_native.py (Phase A)
 metrics_{hitting,pitching}_native.py  — mirror the production formulas, import tables_native
 main_native.py                        — standalone end-to-end run → hitters_native.html / pitchers_native.html
 build_calculator.py                   — standalone → calculator.html (interactive, offline)
@@ -85,16 +86,46 @@ rebuild fits genuinely separate `vsR`/`vsL` tables per category directly against
 split data. Result: markedly better fit quality (e.g. hitting-vs-RHP R² 0.44–0.68 vs. the old
 blended fit's 0.19–0.42) and better real-world predictive power — see Verification below.
 
+## Role/eligibility thresholds (Phase A, done — Pass 9, 2026-08-24)
+
+`PITCH_MINIMUM_RATING`, `POSITION_THRESHOLDS`, `MINIMUM_STARTER_STAMINA` were still calibrated to
+the old 20-80 stopgap domain even after Workstream A/B went native. `extract_thresholds.py` refits
+all three directly against real PSD outcomes — not a regression like Workstream A/B, but a binary
+classification threshold: for each rating, the cutoff maximizing Youden's J (sensitivity +
+specificity − 1) for "rating ≥ cutoff" predicting the real label. Real labels: starter/reliever
+from `player_pitching_stats_history` (`gs`/`g` ≥ 0.5 share, `g` ≥ 10), primary position from
+`player_fielding_stats_history` (most real games played that season, `g` ≥ 20), across all 4
+seasons (`extract_pairs.SEASON_RATING_PAIRS`). Writes reviewed literals to `thresholds_native.py`.
+
+| threshold | old (stopgap-domain) | new (native) | Youden's J | n |
+|---|---|---|---|---|
+| `MINIMUM_STARTER_STAMINA` | 40 | 37 | 0.535 | 1,939 pitcher-seasons |
+| `PITCH_MINIMUM_RATING` | 45 | 23 | 0.591 (joint w/ stamina) | 1,939 |
+| `POSITION_THRESHOLDS` (C/CF/RF/LF/SS/2B/3B, per-component) | see `config.py` | see `thresholds_native.py` | 0.09–1.000 | 1,562 fielder-seasons |
+
+Catcher components (`Cfram`/`Cabil`/`Carm`) all hit J=1.000 — a real, wide gap between catchers
+and everyone else on these components, not a precisely-pinned decision boundary; treat those
+three as "clearly separated," not "precisely calibrated." Outfield-arm components generally
+scored weakest (J as low as 0.09) — real primary position is driven far more by range than arm,
+which the refit surfaces but doesn't fully resolve.
+
+`main_native.py` now computes `pitches`/`pitchesP`/`field`/`sprp`/`sprpP` directly on raw ratings
+via `count_pitches_native()`/`can_field_native()`, no stopgap involved — verified end-to-end: 0%
+NaN on `field`/`stamina`/`pitches`, no collapse to all-one-class (2,280 rp / 1,472 sp / 14,435
+non-pitchers; position eligibility spans all 7 non-corner-infield/outfield keys with a sane mix
+of single- and multi-position players).
+
 ## Deliberately out of scope
 
-- **Fielding** (`FIELDING_RUN_VALUES_VS_REPLACEMENT`) — no verified fielding-outcome dataset;
-  `main_native.py` runs the existing stopgap-based `metrics_fielding.py` for `*_def` only.
-- **Role/eligibility thresholds** (`PITCH_MINIMUM_RATING`, `POSITION_THRESHOLDS`,
-  `MINIMUM_STARTER_STAMINA`) — still stopgap-domain; `main_native.py` computes
-  `pitches`/`field`/`sprp` on a stopgap-scaled copy exactly as production does.
+- **Fielding VALUE** (`FIELDING_RUN_VALUES_VS_REPLACEMENT`) — Phase B, not started; no verified
+  fielding-outcome dataset yet (see the approved plan's Phase B investigation steps — the
+  `framing`-for-pitchers anomaly and `zr`/`eff` units need resolving first). `main_native.py`
+  still runs the existing stopgap-based `metrics_fielding.py` for `*_def` only — this is
+  independent of the now-native "field" eligibility flag above (which position you're *eligible*
+  for vs. how many runs your defense there is *worth* are different questions).
 - **Cutover** — the live pipeline is untouched; promoting these tables into `config.py` (and
-  deleting the stopgap) is a separate, deliberate decision once the side-by-side comparison
-  has been reviewed.
+  deleting the stopgap) is a separate, deliberate decision once Phase B is resolved and the
+  side-by-side comparison has been reviewed.
 
 ## Verification results (2026-08-22, local copy of live DB, 4-season split-aware version)
 
