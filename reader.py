@@ -305,14 +305,19 @@ def add_rule5_eligible(df: pd.DataFrame) -> pd.DataFrame:
     """
     Flags each player as Rule 5 draft-eligible: still in an organization's
     system below the MLB level (organization_id > 0, level_id != MLB_LEVEL_ID
-    — not already on the active MLB roster), not retired, and
-    pro_service_years has reached or passed years_protected_from_rule_5 —
-    OOTP's own fixed grace-period allotment (5 years if signed at 18 or
-    younger, 4 if 19+; confirmed against real age-at-signing data in the
-    live DB, not assumed). Neither field is promoted to a first-class
-    `player` column by psd-ootp's ingest — years_protected_from_rule_5
-    lives in extra_json alongside draft_eligible/draft_year/etc. (see
-    psd-ootp's PLAYER_DIM_ALIASES) — so this parses it directly.
+    — not already on the active MLB roster), never accrued MLB time
+    (mlb_service_days = 0 — excludes anyone who's already been up, even
+    briefly, since real Rule 5 exposure is about protecting players who've
+    never been added to the 40-man, not just "not on the roster today"),
+    not retired, and pro_service_years has reached or passed
+    years_protected_from_rule_5 — OOTP's own fixed grace-period allotment
+    (5 years if signed at 18 or younger, 4 if 19+; confirmed against real
+    age-at-signing data in the live DB, not assumed). Neither
+    years_protected_from_rule_5 nor mlb_service_days's parent fields are
+    promoted uniformly — mlb_service_days IS a first-class `player` column,
+    but years_protected_from_rule_5 lives in extra_json alongside
+    draft_eligible/draft_year/etc. (see psd-ootp's PLAYER_DIM_ALIASES) — so
+    this parses that one directly.
 
     ">=" rather than "==" (only the season a player first crosses the
     threshold): includes every eligible non-MLB player still in an org,
@@ -328,6 +333,7 @@ def add_rule5_eligible(df: pd.DataFrame) -> pd.DataFrame:
         SELECT player_id, pro_service_years, extra_json
         FROM player
         WHERE retired = 0 AND organization_id > 0 AND level_id != ?
+          AND mlb_service_days = 0
     """, (MLB_LEVEL_ID,)).fetchall()
     conn.close()
 
