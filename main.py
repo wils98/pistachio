@@ -4,7 +4,7 @@ import sys
 from datetime import datetime, timezone
 
 from config import DB_PATH
-from reader import load_players, add_pitching_career_stats, add_hitting_career_stats, add_scouted_ratings, apply_native_scale_stopgap, count_pitches, can_field, is_flagged, add_draft_availability, RATINGS_SOURCE
+from reader import load_players, add_pitching_career_stats, add_hitting_career_stats, add_scouted_ratings, apply_native_scale_stopgap, count_pitches, can_field, is_flagged, add_draft_availability, add_rule5_eligible, RATINGS_SOURCE
 from metrics_pitching import calc_pitching_metrics, calc_potential_pitching_metrics
 from metrics_hitting import calc_hitting_metrics, calc_potential_hitting_metrics
 from metrics_fielding import calc_fielding_metrics
@@ -58,6 +58,7 @@ def main():
     df = can_field(df)
     df = is_flagged(df)
     df = add_draft_availability(df)
+    df = add_rule5_eligible(df)
     df = calc_pitching_metrics(df)
     df = calc_potential_pitching_metrics(df)    
     df = calc_hitting_metrics(df)

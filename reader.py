@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 import numpy as np
@@ -297,4 +298,46 @@ def add_draft_availability(df: pd.DataFrame) -> pd.DataFrame:
         df["draft_pool_year"].notna() & ~df["player_id"].isin(drafted_ids),
         "avail", ""
     )
+    return df
+
+
+def add_rule5_eligible(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Flags each player as Rule 5 draft-eligible: still in an organization's
+    system below the MLB level (organization_id > 0, level_id != MLB_LEVEL_ID
+    — not already on the active MLB roster), not retired, and
+    pro_service_years has reached or passed years_protected_from_rule_5 —
+    OOTP's own fixed grace-period allotment (5 years if signed at 18 or
+    younger, 4 if 19+; confirmed against real age-at-signing data in the
+    live DB, not assumed). Neither field is promoted to a first-class
+    `player` column by psd-ootp's ingest — years_protected_from_rule_5
+    lives in extra_json alongside draft_eligible/draft_year/etc. (see
+    psd-ootp's PLAYER_DIM_ALIASES) — so this parses it directly.
+
+    ">=" rather than "==" (only the season a player first crosses the
+    threshold): includes every eligible non-MLB player still in an org,
+    not just this year's newly-exposed cohort — real teams do leave
+    fringe players perpetually exposed for years rather than spend a
+    40-man spot protecting them. There's no direct "on the 40-man roster"
+    flag in this data model to narrow the pool further (extra_json's
+    is_on_secondary was checked and doesn't match that shape — populated
+    mostly at the MLB level, not tied to minor-league roster protection).
+    """
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT player_id, pro_service_years, extra_json
+        FROM player
+        WHERE retired = 0 AND organization_id > 0 AND level_id != ?
+    """, (MLB_LEVEL_ID,)).fetchall()
+    conn.close()
+
+    eligible_ids = set()
+    for row in rows:
+        extra = json.loads(row["extra_json"])
+        allotment = extra.get("years_protected_from_rule_5")
+        service = row["pro_service_years"]
+        if allotment is not None and service is not None and service >= allotment:
+            eligible_ids.add(row["player_id"])
+
+    df["rule5_eligible"] = df["player_id"].isin(eligible_ids)
     return df
