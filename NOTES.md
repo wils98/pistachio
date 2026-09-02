@@ -367,6 +367,31 @@ the gap first.
   `framing`/`arm` actually measure (see the approved plan's investigation steps) before any
   fitting code gets written.
 
+**Pass 10 (2026-08-24, same day) — added Rule 5 eligible player pages:**
+
+User request: projections (current + potential) for every Rule 5 draft-eligible player. No
+direct "Rule 5 eligible" flag exists anywhere in psd-ootp's data model, so this required real
+investigation into what OOTP itself tracks:
+
+- `player.extra_json.years_protected_from_rule_5` is OOTP's own fixed grace-period allotment
+  (never promoted to a first-class column — see psd-ootp's `PLAYER_DIM_ALIASES`) — confirmed
+  directly against real age-at-signing data: 5 years if signed at 18 or younger, 4 if 19+,
+  matching the real-world Rule 5 rule. It's a static allotment, not a countdown — doesn't
+  decrease with `pro_service_years`.
+- No "on the 40-man roster" flag exists anywhere in this data model (`extra_json`'s
+  `is_on_secondary` was checked and doesn't match that shape — populated mostly at the MLB
+  level, not tied to minor-league roster protection).
+- Eligibility definition, confirmed with the user: `pro_service_years >= years_protected_from_rule_5`,
+  not already at the MLB level (`level_id != 1`), in an organization (`organization_id > 0`), not
+  retired. Deliberately the broader ">=" reading (every player who's ever crossed the threshold
+  and is still in an org, not just this year's newly-exposed cohort) — real teams do leave fringe
+  players perpetually exposed for years rather than spend a 40-man spot protecting them.
+- New `reader.py` function `add_rule5_eligible()`, wired into `main.py` alongside the existing
+  draft-availability flag. New `rule5_h.html`/`rule5_p.html` pages in `exporter.py`'s
+  `EXPORT_PAGES`, reusing `hitters.html`/`pitchers.html`'s exact column set (current + potential
+  ratings/wOBA/WAR) with the new flag added to the filter. Live: 2,634 eligible hitters, 2,912
+  eligible pitchers against the real production DB.
+
 ## Current state (as of this writing)
 
 - `pistachio-serve.service`: **running** on the box, serving real projections against live PSD
